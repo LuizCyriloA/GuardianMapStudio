@@ -346,13 +346,7 @@ export default defineComponent({
         this.vertices.push(e.latlng)
         this.updatePreviewPolyline()
       } else if (this.drawingMode === 'waypoint') {
-        this.$emit('entity-form', { entityType: '', initialData: {} })
-        this.$nextTick(() => {
-          this.$emit('entity-form', {
-            entityType: 'waypoint',
-            initialData: { lat, lng, waypoint_type: '', road_name: '' },
-          })
-        })
+        this.openWaypointForm(e.latlng)
       } else if (this.drawingMode === 'area') {
         this.vertices.push(e.latlng)
         this.updatePreviewPolygon()
@@ -569,6 +563,9 @@ export default defineComponent({
         const weight = selected ? SELECTED_ROAD_WEIGHT : 4
         const line = L.polyline(lls, { color, weight, opacity: 0.9 })
         line.on('click', (e) => {
+          // In non-select modes (e.g. waypoint) let the event bubble to the
+          // map so onMapClick can handle it for the active mode.
+          if (this.drawingMode !== 'select') return
           L.DomEvent.stopPropagation(e)
           this.onRoadClick(road)
         })
@@ -701,6 +698,42 @@ export default defineComponent({
         if (a?.polygon[0]) pos = [a.polygon[0].lat, a.polygon[0].lng]
       }
       if (pos) this.map.panTo(pos)
+    },
+
+    // ── Waypoint form (Stage 8.C §5.5.2) ──────────────────────────────────
+
+    openWaypointForm(latlng: L.LatLng) {
+      // Force EntityForm to re-mount even if already open with stale data
+      // (race-condition fix: false → nextTick → true re-triggers v-if).
+      this.$emit('entity-form', { entityType: '', initialData: {} })
+      this.$nextTick(() => {
+        this.$emit('entity-form', {
+          entityType: 'waypoint',
+          initialData: {
+            lat: latlng.lat,
+            lng: latlng.lng,
+            waypoint_type: '',
+            name: '',
+            road_name: this.guessNearestRoadName(latlng) ?? '',
+            heading_degrees: null,
+          },
+        })
+      })
+    },
+
+    guessNearestRoadName(latlng: L.LatLng): string | null {
+      // O(N*M) nearest-vertex scan. Acceptable for ≤500 entities in MVP.
+      // Returns null if no road vertex is within ~30 m of the click.
+      let nearest: { name: string; dist: number } | null = null
+      for (const road of useMapStore().roads) {
+        for (const pt of road.coordinates) {
+          const d = latlng.distanceTo([pt.lat, pt.lng])
+          if (!nearest || d < nearest.dist) {
+            nearest = { name: road.name, dist: d }
+          }
+        }
+      }
+      return nearest && nearest.dist <= 30 ? nearest.name : null
     },
 
     // ── Road Quick Select handlers (Stage 8.A §5.3.2) ─────────────────────

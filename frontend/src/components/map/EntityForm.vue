@@ -187,6 +187,12 @@ export default defineComponent({
   created() {
     Object.assign(this.form, this.initialData)
   },
+  mounted() {
+    // Auto-focus TIPO select when the waypoint form opens (v-if re-mount).
+    if (this.entityType === 'waypoint') {
+      this.$nextTick(() => (this.$refs.typeSelect as HTMLSelectElement)?.focus())
+    }
+  },
   watch: {
     initialData(newVal: Record<string, unknown>) {
       Object.assign(this.form, newVal)
