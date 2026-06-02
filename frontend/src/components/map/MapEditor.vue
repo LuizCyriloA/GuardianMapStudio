@@ -21,12 +21,22 @@
         title="Centralizar mapa nas entidades"
         @click="recenterOnEntities"
       >🎯 Centralizar</button>
+      <RoadQuickSelect
+        @road-selected="onRoadFromQuickSelect"
+        @selection-cleared="onQuickSelectCleared"
+      />
       <button
         :style="undoBtnStyle"
         :disabled="!canUndo"
         :title="canUndo ? undoLabel : 'Nada para desfazer'"
         @click="triggerUndo"
       >⟲ Desfazer</button>
+    </div>
+
+    <!-- Select-mode hint (Stage 8.B — shown only in select mode) -->
+    <div v-if="drawingMode === 'select'" class="select-mode-hint">
+      💡 Clique numa rua para selecionar.
+      Mantenha <kbd>CTRL</kbd> e arraste para selecionar várias.
     </div>
 
     <!-- Bulk selection status bar -->
@@ -83,6 +93,7 @@ import { api } from '../../api/client'
 import OsmImportModal from './OsmImportModal.vue'
 import MergeRoadsModal from './MergeRoadsModal.vue'
 import ConfirmModal from '../common/ConfirmModal.vue'
+import RoadQuickSelect from './RoadQuickSelect.vue'
 import { CompassControl } from './CompassControl'
 import { attachRectangleSelector } from './RectangleSelector'
 import type { RoadResponse, GeoPoint } from '../../api/types'
@@ -125,7 +136,7 @@ function makeWaypointIcon(type: string): L.DivIcon {
 
 export default defineComponent({
   name: 'MapEditor',
-  components: { OsmImportModal, MergeRoadsModal, ConfirmModal },
+  components: { OsmImportModal, MergeRoadsModal, ConfirmModal, RoadQuickSelect },
   emits: ['entity-form', 'entity-selected'],
 
   data() {
@@ -692,6 +703,38 @@ export default defineComponent({
       if (pos) this.map.panTo(pos)
     },
 
+    // ── Road Quick Select handlers (Stage 8.A §5.3.2) ─────────────────────
+
+    onRoadFromQuickSelect(roadId: number) {
+      this.refreshRoadStyles()
+      this.centerMapOnRoad(roadId)
+      this.openRoadPanel(roadId)
+    },
+
+    onQuickSelectCleared() {
+      this.refreshRoadStyles()
+      this.$emit('entity-form', { entityType: '', initialData: {} })
+    },
+
+    centerMapOnRoad(roadId: number) {
+      const store = useMapStore()
+      const road = store.roads.find((r: RoadResponse) => r.id === roadId)
+      if (!road || road.coordinates.length === 0) return
+      const bounds = L.latLngBounds(
+        road.coordinates.map((p: GeoPoint) => [p.lat, p.lng] as L.LatLngExpression),
+      )
+      if (bounds.isValid()) {
+        this.map.fitBounds(bounds, { padding: [60, 60], maxZoom: 19 })
+      }
+    },
+
+    openRoadPanel(roadId: number) {
+      const store = useMapStore()
+      const road = store.roads.find((r: RoadResponse) => r.id === roadId)
+      if (!road) return
+      this.$emit('entity-form', { entityType: 'road', initialData: { ...road } })
+    },
+
     // ── Style helpers ──────────────────────────────────────────────────────
 
     toolBtn(active: boolean): Record<string, string> {
@@ -723,3 +766,21 @@ export default defineComponent({
   },
 })
 </script>
+
+<style scoped>
+.select-mode-hint {
+  background: #1e293b;
+  border-left: 3px solid #FFB400;
+  padding: 6px 12px;
+  font-size: 0.85rem;
+  color: #94a3b8;
+}
+.select-mode-hint kbd {
+  background: #334155;
+  border: 1px solid #475569;
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-family: monospace;
+  color: #e2e8f0;
+}
+</style>
