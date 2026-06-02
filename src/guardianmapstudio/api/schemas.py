@@ -305,3 +305,51 @@ class OsmImportResponse(BaseModel):
     created_count: int
     deleted_existing: int
     renamed: list[dict[str, str]]   # [{"from": "...", "to": "..."}, ...]
+
+
+# --- Road Merge (appended) ---
+
+
+class DuplicateGroupResponse(BaseModel):
+    """One group of roads that appear to be duplicates of each other.
+
+    Detected by stripping the OSM-suffix pattern from road names:
+    "Rua A", "Rua A (2)", "Rua A (3)" → group with base_name "Rua A".
+    """
+    base_name: str
+    road_ids: list[int]
+    road_names: list[str]
+    total_points: int       # sum of all coordinates across the group
+
+
+class DuplicateGroupsResponse(BaseModel):
+    groups: list[DuplicateGroupResponse]
+
+
+class RoadMergeGroup(BaseModel):
+    """One merge instruction: combine these source_road_ids into a new
+    road named target_name. The first id in the list determines which
+    road's attributes (direction, speed_limit, width) are kept."""
+    target_name: str
+    source_road_ids: list[int]
+
+
+class RoadMergeRequest(BaseModel):
+    groups: list[RoadMergeGroup]
+
+
+class RoadMergeResultItem(BaseModel):
+    target_name: str
+    merged_road_id: int          # id of the resulting merged road
+    source_road_ids: list[int]   # original ids that were combined
+    deleted_road_ids: list[int]  # ids that no longer exist after merge
+    total_coordinates: int       # length of the merged polyline
+    reversed_road_ids: list[int] # source roads whose direction was flipped
+    gaps_meters: list[float]     # gap sizes > 1.0m (warnings)
+    reassigned_waypoints: int    # count of waypoints whose road_name was updated
+    reassigned_crossroads: int   # count of crossroads with road_a/road_b updates
+
+
+class RoadMergeResponse(BaseModel):
+    workspace_id: int
+    results: list[RoadMergeResultItem]

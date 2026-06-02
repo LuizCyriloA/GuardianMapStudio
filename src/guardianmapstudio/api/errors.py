@@ -16,3 +16,6 @@ class ErrorCode(str, Enum):
     OSM_PARSE_ERROR = "osm_parse_error"
     OSM_TOO_MANY_WAYS = "osm_too_many_ways"
     PAYLOAD_TOO_LARGE = "payload_too_large"
+    MERGE_INSUFFICIENT_ROADS = "merge_insufficient_roads"
+    MERGE_DUPLICATE_SOURCE = "merge_duplicate_source"
+    MERGE_FAILED = "merge_failed"
