@@ -8,6 +8,7 @@ import { api } from '../../api/client';
 import OsmImportModal from './OsmImportModal.vue';
 import MergeRoadsModal from './MergeRoadsModal.vue';
 import ConfirmModal from '../common/ConfirmModal.vue';
+import RoadQuickSelect from './RoadQuickSelect.vue';
 import { CompassControl } from './CompassControl';
 import { attachRectangleSelector } from './RectangleSelector';
 // ── Waypoint icon config ────────────────────────────────────────────────────
@@ -43,7 +44,7 @@ function makeWaypointIcon(type) {
 }
 export default defineComponent({
     name: 'MapEditor',
-    components: { OsmImportModal, MergeRoadsModal, ConfirmModal },
+    components: { OsmImportModal, MergeRoadsModal, ConfirmModal, RoadQuickSelect },
     emits: ['entity-form', 'entity-selected'],
     data() {
         return {
@@ -242,13 +243,7 @@ export default defineComponent({
                 this.updatePreviewPolyline();
             }
             else if (this.drawingMode === 'waypoint') {
-                this.$emit('entity-form', { entityType: '', initialData: {} });
-                this.$nextTick(() => {
-                    this.$emit('entity-form', {
-                        entityType: 'waypoint',
-                        initialData: { lat, lng, waypoint_type: '', road_name: '' },
-                    });
-                });
+                this.openWaypointForm(e.latlng);
             }
             else if (this.drawingMode === 'area') {
                 this.vertices.push(e.latlng);
@@ -465,6 +460,10 @@ export default defineComponent({
                 const weight = selected ? SELECTED_ROAD_WEIGHT : 4;
                 const line = L.polyline(lls, { color, weight, opacity: 0.9 });
                 line.on('click', (e) => {
+                    // In non-select modes (e.g. waypoint) let the event bubble to the
+                    // map so onMapClick can handle it for the active mode.
+                    if (this.drawingMode !== 'select')
+                        return;
                     L.DomEvent.stopPropagation(e);
                     this.onRoadClick(road);
                 });
@@ -615,6 +614,66 @@ export default defineComponent({
             if (pos)
                 this.map.panTo(pos);
         },
+        // ── Waypoint form (Stage 8.C §5.5.2) ──────────────────────────────────
+        openWaypointForm(latlng) {
+            // Force EntityForm to re-mount even if already open with stale data
+            // (race-condition fix: false → nextTick → true re-triggers v-if).
+            this.$emit('entity-form', { entityType: '', initialData: {} });
+            this.$nextTick(() => {
+                this.$emit('entity-form', {
+                    entityType: 'waypoint',
+                    initialData: {
+                        lat: latlng.lat,
+                        lng: latlng.lng,
+                        waypoint_type: '',
+                        name: '',
+                        road_name: this.guessNearestRoadName(latlng) ?? '',
+                        heading_degrees: null,
+                    },
+                });
+            });
+        },
+        guessNearestRoadName(latlng) {
+            // O(N*M) nearest-vertex scan. Acceptable for ≤500 entities in MVP.
+            // Returns null if no road vertex is within ~30 m of the click.
+            let nearest = null;
+            for (const road of useMapStore().roads) {
+                for (const pt of road.coordinates) {
+                    const d = latlng.distanceTo([pt.lat, pt.lng]);
+                    if (!nearest || d < nearest.dist) {
+                        nearest = { name: road.name, dist: d };
+                    }
+                }
+            }
+            return nearest && nearest.dist <= 30 ? nearest.name : null;
+        },
+        // ── Road Quick Select handlers (Stage 8.A §5.3.2) ─────────────────────
+        onRoadFromQuickSelect(roadId) {
+            this.refreshRoadStyles();
+            this.centerMapOnRoad(roadId);
+            this.openRoadPanel(roadId);
+        },
+        onQuickSelectCleared() {
+            this.refreshRoadStyles();
+            this.$emit('entity-form', { entityType: '', initialData: {} });
+        },
+        centerMapOnRoad(roadId) {
+            const store = useMapStore();
+            const road = store.roads.find((r) => r.id === roadId);
+            if (!road || road.coordinates.length === 0)
+                return;
+            const bounds = L.latLngBounds(road.coordinates.map((p) => [p.lat, p.lng]));
+            if (bounds.isValid()) {
+                this.map.fitBounds(bounds, { padding: [60, 60], maxZoom: 19 });
+            }
+        },
+        openRoadPanel(roadId) {
+            const store = useMapStore();
+            const road = store.roads.find((r) => r.id === roadId);
+            if (!road)
+                return;
+            this.$emit('entity-form', { entityType: 'road', initialData: { ...road } });
+        },
         // ── Style helpers ──────────────────────────────────────────────────────
         toolBtn(active) {
             return {
@@ -646,7 +705,7 @@ export default defineComponent({
 function __VLS_template() {
     const __VLS_ctx = {};
     const __VLS_localComponents = {
-        ...{ OsmImportModal, MergeRoadsModal, ConfirmModal },
+        ...{ OsmImportModal, MergeRoadsModal, ConfirmModal, RoadQuickSelect },
         ...{},
         ...{},
         ...__VLS_ctx,
@@ -658,6 +717,9 @@ function __VLS_template() {
     };
     let __VLS_directives;
     let __VLS_styleScopedClasses;
+    __VLS_styleScopedClasses['select-mode-hint'];
+    // CSS variable injection 
+    // CSS variable injection end 
     let __VLS_resolvedLocalAndGlobalComponents;
     __VLS_elementAsFunction(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({ ...{ style: ({}) }, });
     __VLS_elementAsFunction(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({ ...{ style: ({}) }, });
@@ -674,7 +736,26 @@ function __VLS_template() {
                 __VLS_ctx.mergeOpen = true;
             } }, ...{ style: ((__VLS_ctx.draftBtnStyle('#7c3aed'))) }, disabled: ((!__VLS_ctx.isDraft)), title: ((__VLS_ctx.isDraft ? 'Mesclar ruas duplicadas' : 'Disponível apenas em rascunho')), });
     __VLS_elementAsFunction(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({ ...{ onClick: (__VLS_ctx.recenterOnEntities) }, ...{ style: ((__VLS_ctx.toolBtn(false))) }, title: ("Centralizar mapa nas entidades"), });
+    const __VLS_0 = __VLS_resolvedLocalAndGlobalComponents.RoadQuickSelect;
+    /** @type { [typeof __VLS_components.RoadQuickSelect, ] } */
+    // @ts-ignore
+    const __VLS_1 = __VLS_asFunctionalComponent(__VLS_0, new __VLS_0({ ...{ 'onRoadSelected': {} }, ...{ 'onSelectionCleared': {} }, }));
+    const __VLS_2 = __VLS_1({ ...{ 'onRoadSelected': {} }, ...{ 'onSelectionCleared': {} }, }, ...__VLS_functionalComponentArgsRest(__VLS_1));
+    let __VLS_6;
+    const __VLS_7 = {
+        onRoadSelected: (__VLS_ctx.onRoadFromQuickSelect)
+    };
+    const __VLS_8 = {
+        onSelectionCleared: (__VLS_ctx.onQuickSelectCleared)
+    };
+    let __VLS_3;
+    let __VLS_4;
+    var __VLS_5;
     __VLS_elementAsFunction(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({ ...{ onClick: (__VLS_ctx.triggerUndo) }, ...{ style: ((__VLS_ctx.undoBtnStyle)) }, disabled: ((!__VLS_ctx.canUndo)), title: ((__VLS_ctx.canUndo ? __VLS_ctx.undoLabel : 'Nada para desfazer')), });
+    if (__VLS_ctx.drawingMode === 'select') {
+        __VLS_elementAsFunction(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({ ...{ class: ("select-mode-hint") }, });
+        __VLS_elementAsFunction(__VLS_intrinsicElements.kbd, __VLS_intrinsicElements.kbd)({});
+    }
     if (__VLS_ctx.bulkStatus) {
         __VLS_elementAsFunction(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({ ...{ style: ({}) }, });
         (__VLS_ctx.bulkStatus);
@@ -685,66 +766,67 @@ function __VLS_template() {
         (__VLS_ctx.snapMsg);
     }
     if (__VLS_ctx.osmImportOpen && __VLS_ctx.workspaceId !== null) {
-        const __VLS_0 = __VLS_resolvedLocalAndGlobalComponents.OsmImportModal;
+        const __VLS_9 = __VLS_resolvedLocalAndGlobalComponents.OsmImportModal;
         /** @type { [typeof __VLS_components.OsmImportModal, ] } */
         // @ts-ignore
-        const __VLS_1 = __VLS_asFunctionalComponent(__VLS_0, new __VLS_0({ ...{ 'onClose': {} }, ...{ 'onImported': {} }, workspaceId: ((__VLS_ctx.workspaceId)), visible: ((__VLS_ctx.osmImportOpen)), }));
-        const __VLS_2 = __VLS_1({ ...{ 'onClose': {} }, ...{ 'onImported': {} }, workspaceId: ((__VLS_ctx.workspaceId)), visible: ((__VLS_ctx.osmImportOpen)), }, ...__VLS_functionalComponentArgsRest(__VLS_1));
-        let __VLS_6;
-        const __VLS_7 = {
+        const __VLS_10 = __VLS_asFunctionalComponent(__VLS_9, new __VLS_9({ ...{ 'onClose': {} }, ...{ 'onImported': {} }, workspaceId: ((__VLS_ctx.workspaceId)), visible: ((__VLS_ctx.osmImportOpen)), }));
+        const __VLS_11 = __VLS_10({ ...{ 'onClose': {} }, ...{ 'onImported': {} }, workspaceId: ((__VLS_ctx.workspaceId)), visible: ((__VLS_ctx.osmImportOpen)), }, ...__VLS_functionalComponentArgsRest(__VLS_10));
+        let __VLS_15;
+        const __VLS_16 = {
             onClose: (...[$event]) => {
                 if (!((__VLS_ctx.osmImportOpen && __VLS_ctx.workspaceId !== null)))
                     return;
                 __VLS_ctx.osmImportOpen = false;
             }
         };
-        const __VLS_8 = {
+        const __VLS_17 = {
             onImported: (__VLS_ctx.onOsmImported)
         };
-        let __VLS_3;
-        let __VLS_4;
-        var __VLS_5;
+        let __VLS_12;
+        let __VLS_13;
+        var __VLS_14;
     }
     if (__VLS_ctx.mergeOpen && __VLS_ctx.workspaceId !== null) {
-        const __VLS_9 = __VLS_resolvedLocalAndGlobalComponents.MergeRoadsModal;
+        const __VLS_18 = __VLS_resolvedLocalAndGlobalComponents.MergeRoadsModal;
         /** @type { [typeof __VLS_components.MergeRoadsModal, ] } */
         // @ts-ignore
-        const __VLS_10 = __VLS_asFunctionalComponent(__VLS_9, new __VLS_9({ ...{ 'onClose': {} }, ...{ 'onMerged': {} }, workspaceId: ((__VLS_ctx.workspaceId)), visible: ((__VLS_ctx.mergeOpen)), }));
-        const __VLS_11 = __VLS_10({ ...{ 'onClose': {} }, ...{ 'onMerged': {} }, workspaceId: ((__VLS_ctx.workspaceId)), visible: ((__VLS_ctx.mergeOpen)), }, ...__VLS_functionalComponentArgsRest(__VLS_10));
-        let __VLS_15;
-        const __VLS_16 = {
+        const __VLS_19 = __VLS_asFunctionalComponent(__VLS_18, new __VLS_18({ ...{ 'onClose': {} }, ...{ 'onMerged': {} }, workspaceId: ((__VLS_ctx.workspaceId)), visible: ((__VLS_ctx.mergeOpen)), }));
+        const __VLS_20 = __VLS_19({ ...{ 'onClose': {} }, ...{ 'onMerged': {} }, workspaceId: ((__VLS_ctx.workspaceId)), visible: ((__VLS_ctx.mergeOpen)), }, ...__VLS_functionalComponentArgsRest(__VLS_19));
+        let __VLS_24;
+        const __VLS_25 = {
             onClose: (...[$event]) => {
                 if (!((__VLS_ctx.mergeOpen && __VLS_ctx.workspaceId !== null)))
                     return;
                 __VLS_ctx.mergeOpen = false;
             }
         };
-        const __VLS_17 = {
+        const __VLS_26 = {
             onMerged: (__VLS_ctx.onMerged)
         };
-        let __VLS_12;
-        let __VLS_13;
-        var __VLS_14;
+        let __VLS_21;
+        let __VLS_22;
+        var __VLS_23;
     }
-    const __VLS_18 = __VLS_resolvedLocalAndGlobalComponents.ConfirmModal;
+    const __VLS_27 = __VLS_resolvedLocalAndGlobalComponents.ConfirmModal;
     /** @type { [typeof __VLS_components.ConfirmModal, ] } */
     // @ts-ignore
-    const __VLS_19 = __VLS_asFunctionalComponent(__VLS_18, new __VLS_18({ ...{ 'onConfirm': {} }, ...{ 'onCancel': {} }, visible: ((__VLS_ctx.confirmModal.visible)), title: ((__VLS_ctx.confirmModal.title)), message: ((__VLS_ctx.confirmModal.message)), items: ((__VLS_ctx.confirmModal.items)), }));
-    const __VLS_20 = __VLS_19({ ...{ 'onConfirm': {} }, ...{ 'onCancel': {} }, visible: ((__VLS_ctx.confirmModal.visible)), title: ((__VLS_ctx.confirmModal.title)), message: ((__VLS_ctx.confirmModal.message)), items: ((__VLS_ctx.confirmModal.items)), }, ...__VLS_functionalComponentArgsRest(__VLS_19));
-    let __VLS_24;
-    const __VLS_25 = {
+    const __VLS_28 = __VLS_asFunctionalComponent(__VLS_27, new __VLS_27({ ...{ 'onConfirm': {} }, ...{ 'onCancel': {} }, visible: ((__VLS_ctx.confirmModal.visible)), title: ((__VLS_ctx.confirmModal.title)), message: ((__VLS_ctx.confirmModal.message)), items: ((__VLS_ctx.confirmModal.items)), }));
+    const __VLS_29 = __VLS_28({ ...{ 'onConfirm': {} }, ...{ 'onCancel': {} }, visible: ((__VLS_ctx.confirmModal.visible)), title: ((__VLS_ctx.confirmModal.title)), message: ((__VLS_ctx.confirmModal.message)), items: ((__VLS_ctx.confirmModal.items)), }, ...__VLS_functionalComponentArgsRest(__VLS_28));
+    let __VLS_33;
+    const __VLS_34 = {
         onConfirm: (...[$event]) => {
             __VLS_ctx.confirmModal.onConfirm();
         }
     };
-    const __VLS_26 = {
+    const __VLS_35 = {
         onCancel: (...[$event]) => {
             __VLS_ctx.confirmModal.visible = false;
         }
     };
-    let __VLS_21;
-    let __VLS_22;
-    var __VLS_23;
+    let __VLS_30;
+    let __VLS_31;
+    var __VLS_32;
+    __VLS_styleScopedClasses['select-mode-hint'];
     var __VLS_slots;
     var __VLS_inheritedAttrs;
     const __VLS_refs = {};

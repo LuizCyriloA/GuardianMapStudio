@@ -56,6 +56,12 @@ export default defineComponent({
     created() {
         Object.assign(this.form, this.initialData);
     },
+    mounted() {
+        // Auto-focus TIPO select when the waypoint form opens (v-if re-mount).
+        if (this.entityType === 'waypoint') {
+            this.$nextTick(() => this.$refs.typeSelect?.focus());
+        }
+    },
     watch: {
         initialData(newVal) {
             Object.assign(this.form, newVal);
