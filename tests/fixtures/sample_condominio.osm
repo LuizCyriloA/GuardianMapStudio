@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6">
+  <!-- Nodes for Way 1: Rua das Palmeiras (residential, two_way) -->
+  <node id="101" lat="-23.550000" lon="-46.630000"/>
+  <node id="102" lat="-23.550500" lon="-46.630200"/>
+  <node id="103" lat="-23.551000" lon="-46.630400"/>
+
+  <!-- Nodes for Way 2: Avenida São João (residential, oneway=yes) -->
+  <node id="201" lat="-23.551500" lon="-46.631000"/>
+  <node id="202" lat="-23.552000" lon="-46.631500"/>
+  <node id="203" lat="-23.552500" lon="-46.632000"/>
+
+  <!-- Nodes for Way 3: footway — must be excluded by default -->
+  <node id="301" lat="-23.553000" lon="-46.632500"/>
+  <node id="302" lat="-23.553200" lon="-46.632700"/>
+
+  <!-- Nodes for Way 4: residential without name — must be excluded by default -->
+  <node id="401" lat="-23.554000" lon="-46.633000"/>
+  <node id="402" lat="-23.554300" lon="-46.633200"/>
+
+  <!-- Nodes for Way 5: Rua das Palmeiras (duplicate name — same as Way 1) -->
+  <node id="501" lat="-23.555000" lon="-46.634000"/>
+  <node id="502" lat="-23.555400" lon="-46.634300"/>
+  <node id="503" lat="-23.555800" lon="-46.634600"/>
+
+  <!-- Way 1: residential with name, two_way -->
+  <way id="1001">
+    <nd ref="101"/>
+    <nd ref="102"/>
+    <nd ref="103"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="Rua das Palmeiras"/>
+    <tag k="maxspeed" v="20"/>
+    <tag k="width" v="7.0"/>
+  </way>
+
+  <!-- Way 2: residential with unicode name, oneway=yes -->
+  <way id="1002">
+    <nd ref="201"/>
+    <nd ref="202"/>
+    <nd ref="203"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="Avenida São João"/>
+    <tag k="oneway" v="yes"/>
+    <tag k="maxspeed" v="30"/>
+  </way>
+
+  <!-- Way 3: footway — excluded by default (include_pedestrian=False) -->
+  <way id="1003">
+    <nd ref="301"/>
+    <nd ref="302"/>
+    <tag k="highway" v="footway"/>
+    <tag k="name" v="Calçada Central"/>
+  </way>
+
+  <!-- Way 4: residential without name tag — excluded by default (include_unnamed=False) -->
+  <way id="1004">
+    <nd ref="401"/>
+    <nd ref="402"/>
+    <tag k="highway" v="residential"/>
+  </way>
+
+  <!-- Way 5: residential with duplicate name (same as Way 1) — triggers deduplication -->
+  <way id="1005">
+    <nd ref="501"/>
+    <nd ref="502"/>
+    <nd ref="503"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="Rua das Palmeiras"/>
+  </way>
+</osm>
