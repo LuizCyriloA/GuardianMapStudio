@@ -407,6 +407,29 @@ class MapRepository:
         )
         return [self._crossroad_to_domain(r) for r in rows]
 
+    def update_crossroad(
+        self,
+        crossroad_id: int,
+        road_a_name: str | None = None,
+        road_b_name: str | None = None,
+        lat: float | None = None,
+        lng: float | None = None,
+    ) -> Crossroad | None:
+        model = self._db.get(CrossroadModel, crossroad_id)
+        if model is None:
+            return None
+        if road_a_name is not None:
+            model.road_a_name = road_a_name
+        if road_b_name is not None:
+            model.road_b_name = road_b_name
+        if lat is not None:
+            model.latitude = lat
+        if lng is not None:
+            model.longitude = lng
+        self._db.commit()
+        self._db.refresh(model)
+        return self._crossroad_to_domain(model)
+
     def delete_crossroad(self, crossroad_id: int) -> bool:
         model = self._db.get(CrossroadModel, crossroad_id)
         if model is None:
