@@ -161,4 +161,31 @@ export const api = {
     request<OsmImportResponse>(
       'POST', `/api/v1/workspaces/${wsId}/osm/import`, payload,
     ),
+
+  // Road merge
+  getDuplicateGroups: (wsId: number) =>
+    request<{ groups: Array<{
+      base_name: string
+      road_ids: number[]
+      road_names: string[]
+      total_points: number
+    }> }>('GET', `/api/v1/workspaces/${wsId}/roads/duplicate-groups`),
+
+  mergeRoads: (wsId: number, groups: Array<{
+    target_name: string
+    source_road_ids: number[]
+  }>) =>
+    request<{ workspace_id: number; results: Array<{
+      target_name: string
+      merged_road_id: number
+      source_road_ids: number[]
+      deleted_road_ids: number[]
+      total_coordinates: number
+      reversed_road_ids: number[]
+      gaps_meters: number[]
+      reassigned_waypoints: number
+      reassigned_crossroads: number
+    }> }>(
+      'POST', `/api/v1/workspaces/${wsId}/roads/merge`, { groups },
+    ),
 }

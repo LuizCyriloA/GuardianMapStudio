@@ -3,8 +3,13 @@ import { defineComponent, watch } from 'vue';
 import L from 'leaflet';
 import { useMapStore } from '../../stores/map';
 import { useWorkspaceStore } from '../../stores/workspace';
+import { useUndoStore } from '../../stores/undo';
 import { api } from '../../api/client';
 import OsmImportModal from './OsmImportModal.vue';
+import MergeRoadsModal from './MergeRoadsModal.vue';
+import ConfirmModal from '../common/ConfirmModal.vue';
+import { CompassControl } from './CompassControl';
+import { attachRectangleSelector } from './RectangleSelector';
 // ── Waypoint icon config ────────────────────────────────────────────────────
 const WAYPOINT_ICON_CFG = {
     stop_sign: { letter: 'P', color: '#E24B4A' },
@@ -19,6 +24,8 @@ const ROAD_COLORS = {
     two_way: '#378ADD',
     one_way: '#ff7800',
 };
+const SELECTED_ROAD_COLOR = '#FFB400';
+const SELECTED_ROAD_WEIGHT = 6;
 const AREA_COLORS = {
     speed_limit: '#ffcc00',
     no_entry: '#ff4444',
@@ -36,12 +43,13 @@ function makeWaypointIcon(type) {
 }
 export default defineComponent({
     name: 'MapEditor',
-    components: { OsmImportModal },
+    components: { OsmImportModal, MergeRoadsModal, ConfirmModal },
     emits: ['entity-form', 'entity-selected'],
     data() {
         return {
             osmImportOpen: false,
-            // Leaflet objects typed as any — Vue's reactive proxy breaks L.Map/LayerGroup types
+            mergeOpen: false,
+            // Leaflet objects typed as any — Vue's reactive proxy breaks L.* types
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             map: null,
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -60,11 +68,23 @@ export default defineComponent({
             previewPolyline: null,
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             snapIndicator: null,
+            // Road id → Leaflet polyline (for in-place style updates without re-render)
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            roadLayerIndex: {},
             drawingMode: 'select',
             vertices: [],
             snapMsg: '',
+            bulkStatus: '',
             pendingRoadCoords: [],
             pendingAreaCoords: [],
+            rectangleTeardown: null,
+            confirmModal: {
+                visible: false,
+                title: '',
+                message: '',
+                items: [],
+                onConfirm: () => { },
+            },
         };
     },
     computed: {
@@ -74,45 +94,67 @@ export default defineComponent({
         workspaceId() {
             return useWorkspaceStore().workspace?.id ?? null;
         },
-        osmBtnStyle() {
-            const draft = this.isDraft;
+        canUndo() {
+            return useUndoStore().canUndo;
+        },
+        undoLabel() {
+            return useUndoStore().lastActionLabel;
+        },
+        undoBtnStyle() {
+            const can = this.canUndo;
             return {
                 padding: '4px 12px',
-                background: draft ? '#0f766e' : '#334155',
-                color: '#fff',
-                border: 'none',
+                background: can ? '#374151' : '#334155',
+                color: can ? '#e2e8f0' : '#6b7280',
+                border: can ? '1px solid #4b5563' : 'none',
                 borderRadius: '4px',
-                cursor: draft ? 'pointer' : 'not-allowed',
+                cursor: can ? 'pointer' : 'not-allowed',
                 fontSize: '12px',
-                opacity: draft ? '1' : '0.5',
             };
         },
     },
+    watch: {
+        drawingMode(newMode, oldMode) {
+            if (oldMode === 'select' && this.rectangleTeardown) {
+                this.rectangleTeardown();
+                this.rectangleTeardown = null;
+            }
+            if (newMode === 'select' && this.map) {
+                this.rectangleTeardown = attachRectangleSelector(this.map, {
+                    onSelect: (bounds) => this.selectRoadsInBounds(bounds),
+                });
+            }
+        },
+    },
     mounted() {
-        this.$nextTick(() => {
-            this.initMap();
-        });
+        this.$nextTick(() => { this.initMap(); });
+        document.addEventListener('keydown', this.onKeyDown);
     },
     beforeUnmount() {
+        document.removeEventListener('keydown', this.onKeyDown);
+        if (this.rectangleTeardown)
+            this.rectangleTeardown();
         if (this.map) {
             this.map.remove();
             this.map = null;
         }
     },
     methods: {
+        // ── Map initialization ─────────────────────────────────────────────────
         initMap() {
             const mapStore = useMapStore();
-            const centerLat = mapStore.roads[0]?.coordinates[0]?.lat ?? -23.55;
-            const centerLng = mapStore.roads[0]?.coordinates[0]?.lng ?? -46.63;
+            const centerLat = mapStore.roads[0]?.coordinates[0]?.lat ?? -15.78;
+            const centerLng = mapStore.roads[0]?.coordinates[0]?.lng ?? -47.93;
             this.map = L.map('guardian-map', {
                 center: [centerLat, centerLng],
-                zoom: 18,
-                doubleClickZoom: false, // we handle dblclick manually
+                zoom: mapStore.roads.length > 0 ? 18 : 5,
+                doubleClickZoom: false,
             });
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
                 attribution: '© OpenStreetMap contributors',
                 maxZoom: 22,
             }).addTo(this.map);
+            new CompassControl().addTo(this.map);
             this.roadsLayer = L.layerGroup().addTo(this.map);
             this.waypointsLayer = L.layerGroup().addTo(this.map);
             this.crossroadsLayer = L.layerGroup().addTo(this.map);
@@ -123,7 +165,10 @@ export default defineComponent({
             this.map.on('dblclick', this.onMapDblClick);
             this.map.on('mousemove', this.onMapMouseMove);
             this.renderAll();
-            // Watch store changes
+            this.$nextTick(() => this.recenterOnEntities());
+            this.rectangleTeardown = attachRectangleSelector(this.map, {
+                onSelect: (bounds) => this.selectRoadsInBounds(bounds),
+            });
             const store = useMapStore();
             watch(() => store.roads, () => this.renderRoads(), { deep: true });
             watch(() => store.waypoints, () => this.renderWaypoints(), { deep: true });
@@ -131,10 +176,37 @@ export default defineComponent({
             watch(() => store.restrictedAreas, () => this.renderAreas(), { deep: true });
             watch(() => useWorkspaceStore().validation, () => this.renderValidation(), { deep: true });
             watch(() => store.selectedEntityId, () => this.panToSelected());
+            watch(() => store.recenterSignal, () => this.recenterOnEntities());
         },
         invalidateSize() {
             this.map?.invalidateSize();
         },
+        // ── Re-center (§5.2) ──────────────────────────────────────────────────
+        recenterOnEntities() {
+            if (!this.map)
+                return;
+            const store = useMapStore();
+            const bounds = L.latLngBounds([]);
+            for (const road of store.roads) {
+                for (const pt of road.coordinates)
+                    bounds.extend([pt.lat, pt.lng]);
+            }
+            for (const wp of store.waypoints)
+                bounds.extend([wp.lat, wp.lng]);
+            for (const cr of store.crossroads)
+                bounds.extend([cr.lat, cr.lng]);
+            for (const area of store.restrictedAreas) {
+                for (const pt of area.polygon)
+                    bounds.extend([pt.lat, pt.lng]);
+            }
+            if (bounds.isValid()) {
+                this.map.fitBounds(bounds, { padding: [40, 40], maxZoom: 19 });
+            }
+            else {
+                this.map.setView([-15.78, -47.93], 5);
+            }
+        },
+        // ── Mode & drawing ────────────────────────────────────────────────────
         setMode(mode) {
             this.cancelDrawing();
             this.drawingMode = mode;
@@ -158,14 +230,24 @@ export default defineComponent({
         },
         onMapClick(e) {
             const { lat, lng } = e.latlng;
+            if (this.drawingMode === 'select') {
+                useMapStore().clearRoadSelection();
+                this.refreshRoadStyles();
+                this.bulkStatus = '';
+                this.$emit('entity-form', { entityType: '', initialData: {} });
+                return;
+            }
             if (this.drawingMode === 'road') {
                 this.vertices.push(e.latlng);
                 this.updatePreviewPolyline();
             }
             else if (this.drawingMode === 'waypoint') {
-                this.$emit('entity-form', {
-                    entityType: 'waypoint',
-                    initialData: { lat, lng, waypoint_type: 'landmark', road_name: '' },
+                this.$emit('entity-form', { entityType: '', initialData: {} });
+                this.$nextTick(() => {
+                    this.$emit('entity-form', {
+                        entityType: 'waypoint',
+                        initialData: { lat, lng, waypoint_type: '', road_name: '' },
+                    });
                 });
             }
             else if (this.drawingMode === 'area') {
@@ -230,9 +312,7 @@ export default defineComponent({
                     }
                 }
             }
-            catch {
-                // Snap errors are non-critical
-            }
+            catch { /* Snap errors are non-critical */ }
         },
         updatePreviewPolyline() {
             if (!this.map)
@@ -255,7 +335,114 @@ export default defineComponent({
                 color: '#EF9F27', weight: 2, dashArray: '6 4',
             }).addTo(this.drawLayer);
         },
-        // ── Render ───────────────────────────────────────────────────────────────
+        // ── Road selection (§5.5) ──────────────────────────────────────────────
+        onRoadClick(road) {
+            if (this.drawingMode !== 'select')
+                return;
+            useMapStore().selectRoad(road.id);
+            this.refreshRoadStyles();
+            this.bulkStatus = '';
+            this.$emit('entity-form', { entityType: 'road', initialData: { ...road } });
+        },
+        refreshRoadStyles() {
+            const store = useMapStore();
+            for (const [idStr, layer] of Object.entries(this.roadLayerIndex)) {
+                const id = Number(idStr);
+                const road = store.roads.find(r => r.id === id);
+                if (!road)
+                    continue;
+                const selected = store.isRoadSelected(id);
+                layer.setStyle({
+                    color: selected ? SELECTED_ROAD_COLOR : (ROAD_COLORS[road.direction] ?? '#378ADD'),
+                    weight: selected ? SELECTED_ROAD_WEIGHT : 4,
+                });
+            }
+        },
+        selectRoadsInBounds(bounds) {
+            const store = useMapStore();
+            const selectedIds = [];
+            for (const road of store.roads) {
+                const hit = road.coordinates.some(p => bounds.contains([p.lat, p.lng]));
+                if (hit)
+                    selectedIds.push(road.id);
+            }
+            store.selectRoads(selectedIds);
+            this.refreshRoadStyles();
+            if (selectedIds.length > 1) {
+                this.bulkStatus = `${selectedIds.length} ruas selecionadas. Pressione Delete para excluir todas.`;
+                this.$emit('entity-form', { entityType: '', initialData: {} });
+            }
+            else if (selectedIds.length === 1) {
+                this.bulkStatus = '';
+                const road = store.roads.find(r => r.id === selectedIds[0]);
+                if (road)
+                    this.$emit('entity-form', { entityType: 'road', initialData: { ...road } });
+            }
+            else {
+                this.bulkStatus = '';
+            }
+        },
+        // ── Keyboard (§5.7 + §5.9) ─────────────────────────────────────────────
+        onKeyDown(e) {
+            const tag = e.target.tagName;
+            if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT')
+                return;
+            if (e.key === 'Delete' || e.key === 'Backspace') {
+                if (useMapStore().selectedRoadIds.length > 0) {
+                    e.preventDefault();
+                    this.openDeleteConfirm();
+                }
+            }
+            if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+                e.preventDefault();
+                useUndoStore().undoLast();
+            }
+        },
+        openDeleteConfirm() {
+            const store = useMapStore();
+            const ids = store.selectedRoadIds;
+            const names = ids
+                .map(id => store.roads.find(r => r.id === id)?.name)
+                .filter(Boolean);
+            this.confirmModal = {
+                visible: true,
+                title: ids.length === 1 ? 'Excluir rua?' : `Excluir ${ids.length} ruas?`,
+                message: ids.length === 1
+                    ? 'Esta ação removerá a rua selecionada do rascunho.'
+                    : `Esta ação removerá ${ids.length} ruas do rascunho.`,
+                items: names,
+                onConfirm: () => this.performDelete([...ids]),
+            };
+        },
+        async performDelete(ids) {
+            this.confirmModal.visible = false;
+            const store = useMapStore();
+            const restoreEntries = ids
+                .map(id => store.roads.find(r => r.id === id))
+                .filter(Boolean);
+            try {
+                for (const id of ids)
+                    await store.deleteRoad(id);
+                useUndoStore().push({ type: 'delete_roads', roads: restoreEntries, timestamp: Date.now() });
+                store.clearRoadSelection();
+                this.bulkStatus = '';
+                this.refreshRoadStyles();
+            }
+            catch (e) {
+                alert(e instanceof Error ? e.message : 'Falha ao excluir');
+            }
+        },
+        triggerUndo() {
+            useUndoStore().undoLast();
+        },
+        // ── OSM / Merge events ──────────────────────────────────────────────────
+        onOsmImported() {
+            this.osmImportOpen = false;
+        },
+        onMerged() {
+            this.mergeOpen = false;
+        },
+        // ── Render ─────────────────────────────────────────────────────────────
         renderAll() {
             this.renderRoads();
             this.renderWaypoints();
@@ -267,13 +454,20 @@ export default defineComponent({
             if (!this.roadsLayer)
                 return;
             this.roadsLayer.clearLayers();
+            this.roadLayerIndex = {};
             const store = useMapStore();
             for (const road of store.roads) {
                 if (road.coordinates.length < 2)
                     continue;
                 const lls = road.coordinates.map(c => [c.lat, c.lng]);
-                const color = ROAD_COLORS[road.direction] ?? '#378ADD';
-                const line = L.polyline(lls, { color, weight: 4 });
+                const selected = store.isRoadSelected(road.id);
+                const color = selected ? SELECTED_ROAD_COLOR : (ROAD_COLORS[road.direction] ?? '#378ADD');
+                const weight = selected ? SELECTED_ROAD_WEIGHT : 4;
+                const line = L.polyline(lls, { color, weight, opacity: 0.9 });
+                line.on('click', (e) => {
+                    L.DomEvent.stopPropagation(e);
+                    this.onRoadClick(road);
+                });
                 line.bindPopup(`
           <b>${road.name}</b><br>
           ${road.speed_limit_kmh} km/h · ${road.direction === 'two_way' ? 'mão dupla' : 'mão única'}<br>
@@ -283,6 +477,7 @@ export default defineComponent({
           </button>
         `);
                 line.addTo(this.roadsLayer);
+                this.roadLayerIndex[road.id] = line;
             }
         },
         renderWaypoints() {
@@ -337,9 +532,7 @@ export default defineComponent({
                     continue;
                 const lls = area.polygon.map(p => [p.lat, p.lng]);
                 const fillColor = AREA_COLORS[area.restriction_type] ?? '#888888';
-                const poly = L.polygon(lls, {
-                    color: fillColor, fillColor, fillOpacity: 0.2, weight: 2,
-                });
+                const poly = L.polygon(lls, { color: fillColor, fillColor, fillOpacity: 0.2, weight: 2 });
                 poly.bindPopup(`
           <b>${area.name}</b><br>
           ${area.restriction_type}
@@ -357,27 +550,27 @@ export default defineComponent({
                 return;
             this.validationLayer.clearLayers();
             const ws = useWorkspaceStore();
-            const mapStore = useMapStore();
+            const store = useMapStore();
             if (!ws.validation)
                 return;
             const entityPos = (type, id) => {
                 if (type === 'road') {
-                    const r = mapStore.roads.find(r => r.id === id);
+                    const r = store.roads.find(r => r.id === id);
                     if (r?.coordinates[0])
                         return [r.coordinates[0].lat, r.coordinates[0].lng];
                 }
                 else if (type === 'waypoint') {
-                    const w = mapStore.waypoints.find(w => w.id === id);
+                    const w = store.waypoints.find(w => w.id === id);
                     if (w)
                         return [w.lat, w.lng];
                 }
                 else if (type === 'crossroad') {
-                    const c = mapStore.crossroads.find(c => c.id === id);
+                    const c = store.crossroads.find(c => c.id === id);
                     if (c)
                         return [c.lat, c.lng];
                 }
                 else if (type === 'restricted_area') {
-                    const a = mapStore.restrictedAreas.find(a => a.id === id);
+                    const a = store.restrictedAreas.find(a => a.id === id);
                     if (a?.polygon[0])
                         return [a.polygon[0].lat, a.polygon[0].lng];
                 }
@@ -388,9 +581,7 @@ export default defineComponent({
                 if (!pos)
                     continue;
                 const color = r.severity === 'error' ? '#dc2626' : '#d97706';
-                const m = L.circleMarker(pos, {
-                    radius: 10, color, fillColor: color, fillOpacity: 0.35, weight: 2,
-                });
+                const m = L.circleMarker(pos, { radius: 10, color, fillColor: color, fillOpacity: 0.35, weight: 2 });
                 m.bindPopup(`<b style="color:${color}">${r.severity.toUpperCase()}</b><br><small>${r.rule_id}</small><br>${r.message}`);
                 m.addTo(this.validationLayer);
             }
@@ -424,10 +615,7 @@ export default defineComponent({
             if (pos)
                 this.map.panTo(pos);
         },
-        onOsmImported() {
-            // Map and validation are reloaded by the store action in OsmImportModal
-            this.osmImportOpen = false;
-        },
+        // ── Style helpers ──────────────────────────────────────────────────────
         toolBtn(active) {
             return {
                 padding: '4px 12px',
@@ -440,12 +628,25 @@ export default defineComponent({
                 fontWeight: active ? '600' : '400',
             };
         },
+        draftBtnStyle(activeColor) {
+            const draft = this.isDraft;
+            return {
+                padding: '4px 12px',
+                background: draft ? activeColor : '#334155',
+                color: '#fff',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: draft ? 'pointer' : 'not-allowed',
+                fontSize: '12px',
+                opacity: draft ? '1' : '0.5',
+            };
+        },
     },
 }); /* PartiallyEnd: #3632/script.vue */
 function __VLS_template() {
     const __VLS_ctx = {};
     const __VLS_localComponents = {
-        ...{ OsmImportModal },
+        ...{ OsmImportModal, MergeRoadsModal, ConfirmModal },
         ...{},
         ...{},
         ...__VLS_ctx,
@@ -464,24 +665,24 @@ function __VLS_template() {
                 __VLS_ctx.setMode('select');
             } }, ...{ style: ((__VLS_ctx.toolBtn(__VLS_ctx.drawingMode === 'select'))) }, });
     __VLS_elementAsFunction(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({ ...{ onClick: (...[$event]) => {
-                __VLS_ctx.osmImportOpen = true;
-            } }, ...{ style: ((__VLS_ctx.osmBtnStyle)) }, disabled: ((!__VLS_ctx.isDraft)), title: ((__VLS_ctx.isDraft ? 'Importar ruas do OpenStreetMap' : 'Disponível apenas em rascunho')), });
-    __VLS_elementAsFunction(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({ ...{ onClick: (...[$event]) => {
-                __VLS_ctx.setMode('road');
-            } }, ...{ style: ((__VLS_ctx.toolBtn(__VLS_ctx.drawingMode === 'road'))) }, });
-    __VLS_elementAsFunction(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({ ...{ onClick: (...[$event]) => {
                 __VLS_ctx.setMode('waypoint');
             } }, ...{ style: ((__VLS_ctx.toolBtn(__VLS_ctx.drawingMode === 'waypoint'))) }, });
-    if (__VLS_ctx.drawingMode === 'road') {
-        __VLS_elementAsFunction(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({ ...{ style: ({}) }, });
-        (__VLS_ctx.vertices.length);
+    __VLS_elementAsFunction(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({ ...{ onClick: (...[$event]) => {
+                __VLS_ctx.osmImportOpen = true;
+            } }, ...{ style: ((__VLS_ctx.draftBtnStyle('#0f766e'))) }, disabled: ((!__VLS_ctx.isDraft)), title: ((__VLS_ctx.isDraft ? 'Importar ruas do OpenStreetMap' : 'Disponível apenas em rascunho')), });
+    __VLS_elementAsFunction(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({ ...{ onClick: (...[$event]) => {
+                __VLS_ctx.mergeOpen = true;
+            } }, ...{ style: ((__VLS_ctx.draftBtnStyle('#7c3aed'))) }, disabled: ((!__VLS_ctx.isDraft)), title: ((__VLS_ctx.isDraft ? 'Mesclar ruas duplicadas' : 'Disponível apenas em rascunho')), });
+    __VLS_elementAsFunction(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({ ...{ onClick: (__VLS_ctx.recenterOnEntities) }, ...{ style: ((__VLS_ctx.toolBtn(false))) }, title: ("Centralizar mapa nas entidades"), });
+    __VLS_elementAsFunction(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({ ...{ onClick: (__VLS_ctx.triggerUndo) }, ...{ style: ((__VLS_ctx.undoBtnStyle)) }, disabled: ((!__VLS_ctx.canUndo)), title: ((__VLS_ctx.canUndo ? __VLS_ctx.undoLabel : 'Nada para desfazer')), });
+    if (__VLS_ctx.bulkStatus) {
+        __VLS_elementAsFunction(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({ ...{ style: ({}) }, });
+        (__VLS_ctx.bulkStatus);
     }
-    if (__VLS_ctx.drawingMode === 'area') {
-        __VLS_elementAsFunction(__VLS_intrinsicElements.span, __VLS_intrinsicElements.span)({ ...{ style: ({}) }, });
-        (__VLS_ctx.vertices.length);
-    }
-    if (__VLS_ctx.drawingMode === 'road' && __VLS_ctx.vertices.length > 0) {
-        __VLS_elementAsFunction(__VLS_intrinsicElements.button, __VLS_intrinsicElements.button)({ ...{ onClick: (__VLS_ctx.cancelDrawing) }, ...{ style: ({}) }, });
+    __VLS_elementAsFunction(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({ id: ("guardian-map"), ...{ style: ({}) }, });
+    if (__VLS_ctx.snapMsg) {
+        __VLS_elementAsFunction(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({ ...{ style: ({}) }, });
+        (__VLS_ctx.snapMsg);
     }
     if (__VLS_ctx.osmImportOpen && __VLS_ctx.workspaceId !== null) {
         const __VLS_0 = __VLS_resolvedLocalAndGlobalComponents.OsmImportModal;
@@ -504,11 +705,46 @@ function __VLS_template() {
         let __VLS_4;
         var __VLS_5;
     }
-    __VLS_elementAsFunction(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({ id: ("guardian-map"), ...{ style: ({}) }, });
-    if (__VLS_ctx.snapMsg) {
-        __VLS_elementAsFunction(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({ ...{ style: ({}) }, });
-        (__VLS_ctx.snapMsg);
+    if (__VLS_ctx.mergeOpen && __VLS_ctx.workspaceId !== null) {
+        const __VLS_9 = __VLS_resolvedLocalAndGlobalComponents.MergeRoadsModal;
+        /** @type { [typeof __VLS_components.MergeRoadsModal, ] } */
+        // @ts-ignore
+        const __VLS_10 = __VLS_asFunctionalComponent(__VLS_9, new __VLS_9({ ...{ 'onClose': {} }, ...{ 'onMerged': {} }, workspaceId: ((__VLS_ctx.workspaceId)), visible: ((__VLS_ctx.mergeOpen)), }));
+        const __VLS_11 = __VLS_10({ ...{ 'onClose': {} }, ...{ 'onMerged': {} }, workspaceId: ((__VLS_ctx.workspaceId)), visible: ((__VLS_ctx.mergeOpen)), }, ...__VLS_functionalComponentArgsRest(__VLS_10));
+        let __VLS_15;
+        const __VLS_16 = {
+            onClose: (...[$event]) => {
+                if (!((__VLS_ctx.mergeOpen && __VLS_ctx.workspaceId !== null)))
+                    return;
+                __VLS_ctx.mergeOpen = false;
+            }
+        };
+        const __VLS_17 = {
+            onMerged: (__VLS_ctx.onMerged)
+        };
+        let __VLS_12;
+        let __VLS_13;
+        var __VLS_14;
     }
+    const __VLS_18 = __VLS_resolvedLocalAndGlobalComponents.ConfirmModal;
+    /** @type { [typeof __VLS_components.ConfirmModal, ] } */
+    // @ts-ignore
+    const __VLS_19 = __VLS_asFunctionalComponent(__VLS_18, new __VLS_18({ ...{ 'onConfirm': {} }, ...{ 'onCancel': {} }, visible: ((__VLS_ctx.confirmModal.visible)), title: ((__VLS_ctx.confirmModal.title)), message: ((__VLS_ctx.confirmModal.message)), items: ((__VLS_ctx.confirmModal.items)), }));
+    const __VLS_20 = __VLS_19({ ...{ 'onConfirm': {} }, ...{ 'onCancel': {} }, visible: ((__VLS_ctx.confirmModal.visible)), title: ((__VLS_ctx.confirmModal.title)), message: ((__VLS_ctx.confirmModal.message)), items: ((__VLS_ctx.confirmModal.items)), }, ...__VLS_functionalComponentArgsRest(__VLS_19));
+    let __VLS_24;
+    const __VLS_25 = {
+        onConfirm: (...[$event]) => {
+            __VLS_ctx.confirmModal.onConfirm();
+        }
+    };
+    const __VLS_26 = {
+        onCancel: (...[$event]) => {
+            __VLS_ctx.confirmModal.visible = false;
+        }
+    };
+    let __VLS_21;
+    let __VLS_22;
+    var __VLS_23;
     var __VLS_slots;
     var __VLS_inheritedAttrs;
     const __VLS_refs = {};

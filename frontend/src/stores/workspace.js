@@ -19,6 +19,9 @@ export const useWorkspaceStore = defineStore('workspace', {
             this.error = null;
             try {
                 this.workspace = await api.getWorkspace(projectId);
+                // Clear undo stack on workspace switch (memory-only undo by design)
+                const { useUndoStore } = await import('./undo');
+                useUndoStore().clear();
             }
             catch (e) {
                 this.error = 'Workspace não encontrado';

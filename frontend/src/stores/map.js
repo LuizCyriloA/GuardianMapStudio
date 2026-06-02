@@ -9,12 +9,15 @@ export const useMapStore = defineStore('map', {
         restrictedAreas: [],
         selectedEntityId: null,
         selectedEntityType: null,
+        selectedRoadIds: [],
         loading: false,
         workspaceId: null,
+        recenterSignal: 0,
     }),
     getters: {
         roadByName: (state) => (name) => state.roads.find(r => r.name === name),
         waypointsByType: (state) => (type) => state.waypoints.filter(w => w.waypoint_type === type),
+        isRoadSelected: (state) => (id) => state.selectedRoadIds.includes(id),
     },
     actions: {
         async fetchMap(workspaceId) {
@@ -30,6 +33,20 @@ export const useMapStore = defineStore('map', {
             finally {
                 this.loading = false;
             }
+        },
+        // Road selection (for select mode + delete key workflow)
+        selectRoad(roadId) {
+            this.selectedRoadIds = [roadId];
+        },
+        selectRoads(roadIds) {
+            this.selectedRoadIds = [...roadIds];
+        },
+        clearRoadSelection() {
+            this.selectedRoadIds = [];
+        },
+        // Signal MapEditor to re-fit bounds (after import, merge, initial load)
+        triggerRecenter() {
+            this.recenterSignal++;
         },
         // Roads
         async createRoad(data) {
@@ -130,6 +147,8 @@ export const useMapStore = defineStore('map', {
             await this.fetchMap(wsId);
             // Refresh validation (the server already re-ran it; this syncs the store)
             await useWorkspaceStore().runValidation();
+            // Signal MapEditor to re-fit bounds on the new roads
+            this.triggerRecenter();
             return result;
         },
         selectEntity(type, id) {
@@ -147,6 +166,7 @@ export const useMapStore = defineStore('map', {
             this.restrictedAreas = [];
             this.selectedEntityId = null;
             this.selectedEntityType = null;
+            this.selectedRoadIds = [];
             this.workspaceId = null;
         },
     },

@@ -72,4 +72,7 @@ export const api = {
         return res.json();
     },
     importOsm: (wsId, payload) => request('POST', `/api/v1/workspaces/${wsId}/osm/import`, payload),
+    // Road merge
+    getDuplicateGroups: (wsId) => request('GET', `/api/v1/workspaces/${wsId}/roads/duplicate-groups`),
+    mergeRoads: (wsId, groups) => request('POST', `/api/v1/workspaces/${wsId}/roads/merge`, { groups }),
 };

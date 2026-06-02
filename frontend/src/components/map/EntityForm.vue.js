@@ -16,7 +16,7 @@ export default defineComponent({
                 speed_limit_kmh: 20,
                 direction: 'two_way',
                 width_meters: 6.0,
-                waypoint_type: 'landmark',
+                waypoint_type: '', // empty — operator must choose Tipo first
                 road_name: '',
                 lat: 0,
                 lng: 0,
@@ -55,6 +55,14 @@ export default defineComponent({
     },
     created() {
         Object.assign(this.form, this.initialData);
+    },
+    watch: {
+        initialData(newVal) {
+            Object.assign(this.form, newVal);
+            if (this.entityType === 'waypoint') {
+                this.$nextTick(() => this.$refs.typeSelect?.focus());
+            }
+        },
     },
     methods: {
         async onSubmit() {
@@ -172,10 +180,10 @@ function __VLS_template() {
     else if (__VLS_ctx.entityType === 'waypoint') {
         __VLS_elementAsFunction(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
         __VLS_elementAsFunction(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({ ...{ style: ({}) }, });
-        __VLS_elementAsFunction(__VLS_intrinsicElements.input)({ placeholder: ("Nome do ponto"), ...{ style: ((__VLS_ctx.inputStyle)) }, });
-        (__VLS_ctx.form.name);
-        __VLS_elementAsFunction(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({ ...{ style: ({}) }, });
-        __VLS_elementAsFunction(__VLS_intrinsicElements.select, __VLS_intrinsicElements.select)({ value: ((__VLS_ctx.form.waypoint_type)), ...{ style: ((__VLS_ctx.inputStyle)) }, });
+        __VLS_elementAsFunction(__VLS_intrinsicElements.select, __VLS_intrinsicElements.select)({ ref: ("typeSelect"), value: ((__VLS_ctx.form.waypoint_type)), ...{ style: ((__VLS_ctx.inputStyle)) }, required: (true), });
+        // @ts-ignore navigation for `const typeSelect = ref()`
+        __VLS_ctx.typeSelect;
+        __VLS_elementAsFunction(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({ value: (""), disabled: (true), });
         __VLS_elementAsFunction(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({ value: ("stop_sign"), });
         __VLS_elementAsFunction(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({ value: ("speed_bump"), });
         __VLS_elementAsFunction(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({ value: ("gate"), });
@@ -184,12 +192,8 @@ function __VLS_template() {
         __VLS_elementAsFunction(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({ value: ("crossroad"), });
         __VLS_elementAsFunction(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({ value: ("stop_zone"), });
         __VLS_elementAsFunction(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({ ...{ style: ({}) }, });
-        __VLS_elementAsFunction(__VLS_intrinsicElements.select, __VLS_intrinsicElements.select)({ value: ((__VLS_ctx.form.road_name)), ...{ style: ((__VLS_ctx.inputStyle)) }, });
-        __VLS_elementAsFunction(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({ value: (""), });
-        for (const [r] of __VLS_getVForSourceType((__VLS_ctx.roads))) {
-            __VLS_elementAsFunction(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({ key: ((r.id)), value: ((r.name)), });
-            (r.name);
-        }
+        __VLS_elementAsFunction(__VLS_intrinsicElements.input)({ placeholder: ("Nome do ponto"), ...{ style: ((__VLS_ctx.inputStyle)) }, });
+        (__VLS_ctx.form.name);
         if (__VLS_ctx.form.waypoint_type === 'speed_bump') {
             __VLS_elementAsFunction(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({});
             __VLS_elementAsFunction(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({ ...{ style: ({}) }, });
@@ -210,6 +214,13 @@ function __VLS_template() {
             __VLS_elementAsFunction(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({ ...{ style: ({}) }, });
             __VLS_elementAsFunction(__VLS_intrinsicElements.input)({ type: ("number"), min: ("0"), max: ("360"), ...{ style: ((__VLS_ctx.inputStyle)) }, });
             (__VLS_ctx.form.heading_degrees);
+        }
+        __VLS_elementAsFunction(__VLS_intrinsicElements.label, __VLS_intrinsicElements.label)({ ...{ style: ({}) }, });
+        __VLS_elementAsFunction(__VLS_intrinsicElements.select, __VLS_intrinsicElements.select)({ value: ((__VLS_ctx.form.road_name)), ...{ style: ((__VLS_ctx.inputStyle)) }, });
+        __VLS_elementAsFunction(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({ value: (""), });
+        for (const [r] of __VLS_getVForSourceType((__VLS_ctx.roads))) {
+            __VLS_elementAsFunction(__VLS_intrinsicElements.option, __VLS_intrinsicElements.option)({ key: ((r.id)), value: ((r.name)), });
+            (r.name);
         }
         __VLS_elementAsFunction(__VLS_intrinsicElements.div, __VLS_intrinsicElements.div)({ ...{ style: ({}) }, });
         (__VLS_ctx.form.lat?.toFixed(7));
@@ -259,7 +270,9 @@ function __VLS_template() {
             } }, ...{ style: ({}) }, });
     var __VLS_slots;
     var __VLS_inheritedAttrs;
-    const __VLS_refs = {};
+    const __VLS_refs = {
+        "typeSelect": __VLS_nativeElements['select'],
+    };
     var $refs;
     var $el;
     return {

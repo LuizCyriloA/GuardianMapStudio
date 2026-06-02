@@ -25,28 +25,26 @@
       <input v-model.number="form.width_meters" type="number" min="0.1" step="0.1" :style="inputStyle" />
     </div>
 
-    <!-- Waypoint form -->
+    <!-- Waypoint form — field order: Tipo → Nome → Conditional → Rua → Posição -->
     <div v-else-if="entityType === 'waypoint'">
-      <label style="display:block;font-size:12px;font-weight:500;margin-bottom:4px;">Nome *</label>
+      <!-- 1. TIPO (first — auto-focused on open) -->
+      <label style="display:block;font-size:12px;font-weight:500;margin-bottom:4px;">Tipo *</label>
+      <select ref="typeSelect" v-model="form.waypoint_type" :style="inputStyle" required>
+        <option value="" disabled>Selecione um tipo</option>
+        <option value="stop_sign">Placa de PARE</option>
+        <option value="speed_bump">Lombada</option>
+        <option value="gate">Portaria</option>
+        <option value="landmark">Ponto de referência</option>
+        <option value="curve">Curva</option>
+        <option value="crossroad">Marcador de cruzamento</option>
+        <option value="stop_zone">Zona de parada</option>
+      </select>
+
+      <!-- 2. NOME -->
+      <label style="display:block;font-size:12px;font-weight:500;margin:8px 0 4px;">Nome *</label>
       <input v-model="form.name" placeholder="Nome do ponto" :style="inputStyle" />
 
-      <label style="display:block;font-size:12px;font-weight:500;margin:8px 0 4px;">Tipo</label>
-      <select v-model="form.waypoint_type" :style="inputStyle">
-        <option value="stop_sign">Parada (stop_sign)</option>
-        <option value="speed_bump">Lombada (speed_bump)</option>
-        <option value="gate">Portão (gate)</option>
-        <option value="landmark">Marco (landmark)</option>
-        <option value="curve">Curva (curve)</option>
-        <option value="crossroad">Cruzamento (crossroad)</option>
-        <option value="stop_zone">Zona de parada (stop_zone)</option>
-      </select>
-
-      <label style="display:block;font-size:12px;font-weight:500;margin:8px 0 4px;">Estrada associada</label>
-      <select v-model="form.road_name" :style="inputStyle">
-        <option value="">Nenhuma</option>
-        <option v-for="r in roads" :key="r.id" :value="r.name">{{ r.name }}</option>
-      </select>
-
+      <!-- 3. Conditional fields -->
       <!-- speed_bump extras -->
       <div v-if="form.waypoint_type === 'speed_bump'">
         <label style="display:block;font-size:12px;font-weight:500;margin:8px 0 4px;">Altura (cm) *</label>
@@ -70,8 +68,16 @@
         <input v-model.number="form.heading_degrees" type="number" min="0" max="360" :style="inputStyle" />
       </div>
 
+      <!-- 4. Road association -->
+      <label style="display:block;font-size:12px;font-weight:500;margin:8px 0 4px;">Rua associada</label>
+      <select v-model="form.road_name" :style="inputStyle">
+        <option value="">— Nenhuma —</option>
+        <option v-for="r in roads" :key="r.id" :value="r.name">{{ r.name }}</option>
+      </select>
+
+      <!-- 5. Position (read-only) -->
       <div style="font-size:11px;color:#94a3b8;margin-top:6px;">
-        Lat: {{ form.lat?.toFixed(7) }} / Lng: {{ form.lng?.toFixed(7) }}
+        Posição: {{ form.lat?.toFixed(7) }}, {{ form.lng?.toFixed(7) }}
       </div>
     </div>
 
@@ -141,7 +147,7 @@ export default defineComponent({
         speed_limit_kmh: 20,
         direction: 'two_way',
         width_meters: 6.0,
-        waypoint_type: 'landmark',
+        waypoint_type: '',  // empty — operator must choose Tipo first
         road_name: '',
         lat: 0,
         lng: 0,
@@ -180,6 +186,14 @@ export default defineComponent({
   },
   created() {
     Object.assign(this.form, this.initialData)
+  },
+  watch: {
+    initialData(newVal: Record<string, unknown>) {
+      Object.assign(this.form, newVal)
+      if (this.entityType === 'waypoint') {
+        this.$nextTick(() => (this.$refs.typeSelect as HTMLSelectElement)?.focus())
+      }
+    },
   },
   methods: {
     async onSubmit() {

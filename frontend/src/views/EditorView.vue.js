@@ -29,13 +29,20 @@ export default defineComponent({
         if (ws.workspace) {
             await map.fetchMap(ws.workspace.id);
             await ws.loadValidation();
+            // Signal MapEditor to recenter on loaded entities
+            map.triggerRecenter();
         }
     },
     methods: {
         onEntityForm({ entityType, initialData }) {
+            // Empty entityType = close the form (e.g., click on empty map in select mode)
+            if (!entityType) {
+                this.showEntityForm = false;
+                return;
+            }
             this.entityFormType = entityType;
             this.entityFormData = initialData;
-            this.entityFormMode = 'create';
+            this.entityFormMode = initialData.id ? 'edit' : 'create';
             this.showEntityForm = true;
         },
         onEntitySelected({ type, id }) {

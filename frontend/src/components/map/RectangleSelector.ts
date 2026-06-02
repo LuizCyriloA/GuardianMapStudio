@@ -1,0 +1,81 @@
+import L from 'leaflet'
+
+export interface RectangleSelectorOptions {
+  /** Called with the geographic bounds of the drawn rectangle. */
+  onSelect: (bounds: L.LatLngBounds) => void
+  /** Visual style for the in-progress rectangle. */
+  style?: L.PathOptions
+}
+
+const DEFAULT_STYLE: L.PathOptions = {
+  color: '#FFB400',
+  weight: 1.5,
+  fillColor: '#FFB400',
+  fillOpacity: 0.18,
+  dashArray: '4 4',
+}
+
+/**
+ * Attaches a click-drag rectangle selection handler to a Leaflet map.
+ * Returns a teardown function that removes all handlers.
+ *
+ * Only active while attached — call teardown() when leaving select mode.
+ */
+export function attachRectangleSelector(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  map: any,
+  opts: RectangleSelectorOptions,
+): () => void {
+  const style = { ...DEFAULT_STYLE, ...(opts.style ?? {}) }
+  let startLatLng: L.LatLng | null = null
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let rectLayer: any = null
+
+  const onMouseDown = (e: L.LeafletMouseEvent) => {
+    if ((e.originalEvent.target as HTMLElement)?.closest?.('.leaflet-marker-icon')) {
+      return // don't start a rectangle on a marker
+    }
+    startLatLng = e.latlng
+    map.dragging.disable()
+    map.getContainer().style.cursor = 'crosshair'
+  }
+
+  const onMouseMove = (e: L.LeafletMouseEvent) => {
+    if (!startLatLng) return
+    const bounds = L.latLngBounds(startLatLng, e.latlng)
+    if (!rectLayer) {
+      rectLayer = L.rectangle(bounds, style).addTo(map)
+    } else {
+      rectLayer.setBounds(bounds)
+    }
+  }
+
+  const onMouseUp = (e: L.LeafletMouseEvent) => {
+    if (!startLatLng) return
+    const bounds = L.latLngBounds(startLatLng, e.latlng)
+    const moved = startLatLng.distanceTo(e.latlng)
+    // Ignore tiny drags (< 5m) — treat as a click handled elsewhere
+    if (moved > 5) {
+      opts.onSelect(bounds)
+    }
+    if (rectLayer) {
+      map.removeLayer(rectLayer)
+      rectLayer = null
+    }
+    startLatLng = null
+    map.dragging.enable()
+    map.getContainer().style.cursor = ''
+  }
+
+  map.on('mousedown', onMouseDown)
+  map.on('mousemove', onMouseMove)
+  map.on('mouseup', onMouseUp)
+
+  return () => {
+    map.off('mousedown', onMouseDown)
+    map.off('mousemove', onMouseMove)
+    map.off('mouseup', onMouseUp)
+    if (rectLayer) map.removeLayer(rectLayer)
+    map.dragging.enable()
+  }
+}

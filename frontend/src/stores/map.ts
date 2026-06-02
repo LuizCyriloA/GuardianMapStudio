@@ -18,8 +18,10 @@ interface MapState {
   restrictedAreas: RestrictedAreaResponse[]
   selectedEntityId: number | null
   selectedEntityType: EntityType | null
+  selectedRoadIds: number[]
   loading: boolean
   workspaceId: number | null
+  recenterSignal: number
 }
 
 export const useMapStore = defineStore('map', {
@@ -30,8 +32,10 @@ export const useMapStore = defineStore('map', {
     restrictedAreas: [],
     selectedEntityId: null,
     selectedEntityType: null,
+    selectedRoadIds: [],
     loading: false,
     workspaceId: null,
+    recenterSignal: 0,
   }),
 
   getters: {
@@ -40,6 +44,9 @@ export const useMapStore = defineStore('map', {
 
     waypointsByType: (state) => (type: string) =>
       state.waypoints.filter(w => w.waypoint_type === type),
+
+    isRoadSelected: (state) => (id: number) =>
+      state.selectedRoadIds.includes(id),
   },
 
   actions: {
@@ -55,6 +62,22 @@ export const useMapStore = defineStore('map', {
       } finally {
         this.loading = false
       }
+    },
+
+    // Road selection (for select mode + delete key workflow)
+    selectRoad(roadId: number) {
+      this.selectedRoadIds = [roadId]
+    },
+    selectRoads(roadIds: number[]) {
+      this.selectedRoadIds = [...roadIds]
+    },
+    clearRoadSelection() {
+      this.selectedRoadIds = []
+    },
+
+    // Signal MapEditor to re-fit bounds (after import, merge, initial load)
+    triggerRecenter() {
+      this.recenterSignal++
     },
 
     // Roads
@@ -158,6 +181,8 @@ export const useMapStore = defineStore('map', {
       await this.fetchMap(wsId)
       // Refresh validation (the server already re-ran it; this syncs the store)
       await useWorkspaceStore().runValidation()
+      // Signal MapEditor to re-fit bounds on the new roads
+      this.triggerRecenter()
       return result
     },
 
@@ -178,6 +203,7 @@ export const useMapStore = defineStore('map', {
       this.restrictedAreas = []
       this.selectedEntityId = null
       this.selectedEntityType = null
+      this.selectedRoadIds = []
       this.workspaceId = null
     },
   },
