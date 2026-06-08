@@ -1,0 +1,16 @@
+# Normalize line endings — store text files with LF in the repo
+# regardless of the developer OS (Windows checkout stays consistent).
+* text=auto eol=lf
+
+# Binary assets — never touch line endings
+*.osm binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.db binary
+
+# Windows scripts stay CRLF
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf

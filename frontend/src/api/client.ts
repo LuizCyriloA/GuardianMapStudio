@@ -116,6 +116,8 @@ export const api = {
     request<CrossroadResponse>('POST', `/api/v1/workspaces/${wsId}/crossroads`, data),
   deleteCrossroad: (wsId: number, id: number) =>
     request<void>('DELETE', `/api/v1/workspaces/${wsId}/crossroads/${id}`),
+  detectCrossroads: (wsId: number) =>
+    request<CrossroadResponse[]>('POST', `/api/v1/workspaces/${wsId}/crossroads/detect`),
 
   // Restricted areas
   getAreas: (wsId: number) =>

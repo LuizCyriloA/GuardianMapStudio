@@ -5,6 +5,12 @@
       <button @click="setMode('select')" :style="toolBtn(drawingMode === 'select')">▶ Selecionar</button>
       <button @click="setMode('waypoint')" :style="toolBtn(drawingMode === 'waypoint')">📍 Waypoint</button>
       <button
+        :style="draftBtnStyle('#0f6bb5')"
+        :disabled="!isDraft"
+        :title="isDraft ? 'Detectar cruzamentos em X e T automaticamente' : 'Disponível apenas em rascunho'"
+        @click="onDetectCrossroads"
+      >🔍 Detectar cruzamentos</button>
+      <button
         :style="draftBtnStyle('#0f766e')"
         :disabled="!isDraft"
         :title="isDraft ? 'Importar ruas do OpenStreetMap' : 'Disponível apenas em rascunho'"
@@ -39,6 +45,11 @@
       Mantenha <kbd>CTRL</kbd> e arraste para selecionar várias.
     </div>
 
+    <!-- Waypoint-mode hint -->
+    <div v-if="drawingMode === 'waypoint'" class="select-mode-hint">
+      📍 Clique no mapa para posicionar o waypoint.
+    </div>
+
     <!-- Bulk selection status bar -->
     <div v-if="bulkStatus"
       style="background:#1e3a5f;color:#93c5fd;font-size:12px;padding:4px 12px;border-bottom:1px solid #1d4ed8;">
@@ -47,6 +58,23 @@
 
     <!-- Map container — NEVER v-if, always present -->
     <div id="guardian-map" style="flex:1;min-height:0;"></div>
+
+    <!-- Road info footer — shown when a single road is selected in select mode -->
+    <transition name="slide-footer">
+      <div v-if="selectedRoad && drawingMode === 'select'" class="road-footer">
+        <div class="road-footer-info">
+          <span class="road-footer-name">{{ selectedRoad.name }}</span>
+          <span class="road-footer-detail">{{ selectedRoad.speed_limit_kmh }} km/h</span>
+          <span class="road-footer-detail">{{ selectedRoad.direction === 'two_way' ? 'Mão dupla' : 'Mão única' }}</span>
+          <span class="road-footer-detail">{{ selectedRoad.width_meters }}m</span>
+        </div>
+        <div class="road-footer-shortcuts">
+          <kbd>P</kbd>
+          <span class="road-footer-shortcut-label">{{ pareStateLabel }}</span>
+        </div>
+        <button class="road-footer-delete" @click="onFooterDelete">🗑 Excluir rua</button>
+      </div>
+    </transition>
 
     <!-- Snap indicator tooltip -->
     <div v-if="snapMsg" style="position:absolute;bottom:8px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.7);color:#fff;padding:4px 12px;border-radius:12px;font-size:12px;pointer-events:none;z-index:1000;">
@@ -123,13 +151,58 @@ const AREA_COLORS: Record<string, string> = {
   pedestrian_only: '#44ff44',
 }
 
-function makeWaypointIcon(type: string): L.DivIcon {
+// Scale factor relative to zoom 18 (the typical editing zoom).
+// Each Leaflet zoom step doubles the map scale; we apply a dampened factor (0.7)
+// so icons grow/shrink more gradually than the map tiles.
+function iconZoomScale(zoom: number): number {
+  return Math.min(2.0, Math.max(0.4, Math.pow(2, (zoom - 18) * 0.7)))
+}
+
+function makeWaypointIcon(type: string, heading?: number | null, zoom = 18): L.DivIcon {
+  const s = iconZoomScale(zoom)
   const cfg = WAYPOINT_ICON_CFG[type] ?? { letter: '?', color: '#888' }
+  const sz = Math.round(24 * s)
+  const fs = Math.round(13 * s)
+  const circle = `<div style="width:${sz}px;height:${sz}px;border-radius:50%;background:${cfg.color};color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:${fs}px;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4);">${cfg.letter}</div>`
+  if (type === 'stop_sign' && heading != null) {
+    // Unrotated icon coordinate system (anchor = center-top = road endpoint):
+    //   x < cx  → left lane   (no marking)
+    //   x > cx  → right lane  (rectangle) and curb (P circle, outside road)
+    //   y > 0   → into the road (anti-heading direction on map after rotation)
+    //
+    // KEY: the rectangle must be TALLER than it is wide so that after rotating
+    // by heading its LONG axis aligns WITH the road direction (parallel to road).
+    //   rH (tall) = along-road dimension  → parallel to road after rotation ✓
+    //   rW (narrow) = cross-road dimension → half-lane width after rotation ✓
+    //
+    // CSS rotation formula (CW, y-down screen):
+    //   new_screen_dx = dx·cos(θ) − dy·sin(θ)
+    //   new_screen_dy = dx·sin(θ) + dy·cos(θ)
+    // So "down in icon" (dy>0) → anti-heading on map ✓
+    //    "right in icon" (dx>0) → right-of-road on map ✓
+    const W   = Math.round(40 * s)   // container width
+    const H   = Math.round(20 * s)   // container height
+    const cx  = Math.round(20 * s)   // anchor x = road centreline
+    const cSz = Math.round(17 * s)   // P circle diameter
+    const cFs = Math.round(10 * s)   // P circle font
+    const pL  = Math.round(22 * s)   // P left  (right of road centre)
+    const pT  = 0                    // P top   (at anchor/endpoint level)
+    const rW  = Math.round(6  * s)   // rectangle narrow side (cross-road, ≈ half lane)
+    const rH  = Math.round(16 * s)   // rectangle tall  side  (along-road → parallel)
+    const rT  = Math.round(2  * s)   // rectangle top offset  (slight depth into road)
+    return L.divIcon({
+      html: `<div style="position:relative;width:${W}px;height:${H}px;transform:rotate(${heading}deg);transform-origin:${cx}px 0;overflow:visible;"><div style="position:absolute;left:${pL}px;top:${pT}px;width:${cSz}px;height:${cSz}px;border-radius:50%;background:${cfg.color};color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:${cFs}px;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4);transform:rotate(${-heading}deg);">P</div><div style="position:absolute;left:${cx}px;top:${rT}px;width:${rW}px;height:${rH}px;background:${cfg.color};border-radius:2px;"></div></div>`,
+      className: '',
+      iconSize: [W, H],
+      iconAnchor: [cx, 0],
+      popupAnchor: [Math.round(8 * s), Math.round(10 * s)],
+    })
+  }
   return L.divIcon({
-    html: `<div style="width:24px;height:24px;border-radius:50%;background:${cfg.color};color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4);">${cfg.letter}</div>`,
+    html: circle,
     className: '',
-    iconSize: [24, 24],
-    iconAnchor: [12, 12],
+    iconSize: [sz, sz],
+    iconAnchor: [Math.round(sz / 2), Math.round(sz / 2)],
     popupAnchor: [0, -14],
   })
 }
@@ -176,6 +249,10 @@ export default defineComponent({
 
       rectangleTeardown: null as (() => void) | null,
 
+      // Road footer + P-key state
+      selectedRoad: null as RoadResponse | null,
+      pareState: 0 as 0 | 1 | 2 | 3,  // 0=none, 1=both, 2=start-only, 3=end-only
+
       confirmModal: {
         visible: false,
         title: '',
@@ -198,6 +275,18 @@ export default defineComponent({
     },
     undoLabel(): string {
       return useUndoStore().lastActionLabel
+    },
+    pareStateLabel(): string {
+      const isOneWay = this.selectedRoad?.direction === 'one_way'
+      const labels: Record<number, string> = isOneWay
+        ? { 0: 'Adicionar PARE', 3: '✓ PARE no fim  →  P: remover' }
+        : {
+            0: 'Adicionar PARE',
+            1: '✓ PARE em ambas  →  P: só início',
+            2: '✓ PARE no início  →  P: só fim',
+            3: '✓ PARE no fim  →  P: remover',
+          }
+      return labels[this.pareState] ?? 'Adicionar PARE'
     },
     undoBtnStyle(): Record<string, string> {
       const can = this.canUndo
@@ -269,6 +358,7 @@ export default defineComponent({
       this.map.on('click', this.onMapClick)
       this.map.on('dblclick', this.onMapDblClick)
       this.map.on('mousemove', this.onMapMouseMove)
+      this.map.on('zoomend', () => this.renderWaypoints())
 
       this.renderAll()
       this.$nextTick(() => this.recenterOnEntities())
@@ -318,7 +408,17 @@ export default defineComponent({
       this.cancelDrawing()
       this.drawingMode = mode
       if (this.map) {
-        this.map.getContainer().style.cursor = mode === 'select' ? '' : 'crosshair'
+        const container = this.map.getContainer()
+        if (mode === 'select') {
+          container.classList.remove('gms-drawing-mode')
+          container.style.removeProperty('cursor')
+        } else {
+          // Leaflet applies `cursor: grab !important` via `.leaflet-grab`.
+          // Inline style setProperty with 'important' is silently ignored for
+          // inline styles per spec. Instead we add a class whose rule in the
+          // stylesheet wins by being declared later (both !important, last wins).
+          container.classList.add('gms-drawing-mode')
+        }
       }
     },
 
@@ -338,6 +438,8 @@ export default defineComponent({
         useMapStore().clearRoadSelection()
         this.refreshRoadStyles()
         this.bulkStatus = ''
+        this.selectedRoad = null
+        this.pareState = 0
         this.$emit('entity-form', { entityType: '', initialData: {} })
         return
       }
@@ -431,6 +533,8 @@ export default defineComponent({
 
     onRoadClick(road: RoadResponse) {
       if (this.drawingMode !== 'select') return
+      if (this.selectedRoad?.id !== road.id) this.pareState = 0
+      this.selectedRoad = road
       useMapStore().selectRoad(road.id)
       this.refreshRoadStyles()
       this.bulkStatus = ''
@@ -477,9 +581,15 @@ export default defineComponent({
 
     // ── Keyboard (§5.7 + §5.9) ─────────────────────────────────────────────
 
-    onKeyDown(e: KeyboardEvent) {
+    async onKeyDown(e: KeyboardEvent) {
       const tag = (e.target as HTMLElement).tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      if ((e.key === 'p' || e.key === 'P') && !e.ctrlKey && !e.metaKey) {
+        if (this.selectedRoad && useMapStore().selectedRoadIds.length === 1) {
+          e.preventDefault()
+          await this.cyclePareState()
+        }
+      }
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (useMapStore().selectedRoadIds.length > 0) {
           e.preventDefault()
@@ -569,14 +679,6 @@ export default defineComponent({
           L.DomEvent.stopPropagation(e)
           this.onRoadClick(road)
         })
-        line.bindPopup(`
-          <b>${road.name}</b><br>
-          ${road.speed_limit_kmh} km/h · ${road.direction === 'two_way' ? 'mão dupla' : 'mão única'}<br>
-          <button onclick="window.guardianApp.deleteEntity('road', ${road.id})"
-            style="margin-top:6px;padding:3px 10px;background:#dc2626;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;">
-            Excluir
-          </button>
-        `)
         line.addTo(this.roadsLayer)
         this.roadLayerIndex[road.id] = line
       }
@@ -588,7 +690,7 @@ export default defineComponent({
       const store = useMapStore()
       for (const wp of store.waypoints) {
         if (!wp.active) continue
-        const icon = makeWaypointIcon(wp.waypoint_type)
+        const icon = makeWaypointIcon(wp.waypoint_type, wp.heading_degrees, this.map?.getZoom() ?? 18)
         const m = L.marker([wp.lat, wp.lng], { icon })
         m.bindPopup(`
           <b>${wp.name}</b><br>
@@ -736,6 +838,193 @@ export default defineComponent({
       return nearest && nearest.dist <= 30 ? nearest.name : null
     },
 
+    // ── P key — stop sign cycling ──────────────────────────────────────────
+
+    calcBearing(from: GeoPoint, to: GeoPoint): number {
+      const toRad = (d: number) => d * Math.PI / 180
+      const φ1 = toRad(from.lat), φ2 = toRad(to.lat)
+      const Δλ = toRad(to.lng - from.lng)
+      const y = Math.sin(Δλ) * Math.cos(φ2)
+      const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ)
+      return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360
+    },
+
+    offsetAlongBearing(pt: { lat: number; lng: number }, bearingDeg: number, meters: number): { lat: number; lng: number } {
+      const R = 6371000
+      const δ = meters / R
+      const θ = bearingDeg * Math.PI / 180
+      const φ1 = pt.lat * Math.PI / 180
+      const λ1 = pt.lng * Math.PI / 180
+      const φ2 = Math.asin(Math.sin(φ1) * Math.cos(δ) + Math.cos(φ1) * Math.sin(δ) * Math.cos(θ))
+      const λ2 = λ1 + Math.atan2(Math.sin(θ) * Math.sin(δ) * Math.cos(φ1), Math.cos(δ) - Math.sin(φ1) * Math.sin(φ2))
+      return { lat: φ2 * 180 / Math.PI, lng: λ2 * 180 / Math.PI }
+    },
+
+    async cyclePareState() {
+      if (!this.selectedRoad) return
+      const road = this.selectedRoad
+      const coords = road.coordinates
+      const mapStore = useMapStore()
+      const wsStore = useWorkspaceStore()
+
+      const isOneWay = road.direction === 'one_way'
+      const nextState: Record<number, number> = isOneWay
+        ? { 0: 3, 3: 0 }
+        : { 0: 1, 1: 2, 2: 3, 3: 0 }
+      const newState = (nextState[this.pareState] ?? 0) as 0 | 1 | 2 | 3
+
+      // Delete all stop_sign waypoints associated with this road
+      const existing = mapStore.waypoints.filter(
+        w => w.waypoint_type === 'stop_sign' && w.road_name === road.name,
+      )
+      for (const wp of existing) await mapStore.deleteWaypoint(wp.id)
+
+      const n = coords.length
+      if (n >= 2 && newState !== 0) {
+        const startHeading = Math.round(this.calcBearing(coords[1], coords[0]) * 10) / 10
+        const endHeading   = Math.round(this.calcBearing(coords[n - 2], coords[n - 1]) * 10) / 10
+
+        const create = async (pt: GeoPoint, heading: number, label: string) => {
+          await mapStore.createWaypoint({
+            name: `PARE – ${road.name} (${label})`,
+            waypoint_type: 'stop_sign',
+            lat: pt.lat,
+            lng: pt.lng,
+            road_name: road.name,
+            heading_degrees: heading,
+            extra_data: {},
+          })
+        }
+
+        if (newState === 1) {
+          await create(coords[0], startHeading, 'início')
+          await create(coords[n - 1], endHeading, 'fim')
+        } else if (newState === 2) {
+          await create(coords[0], startHeading, 'início')
+        } else if (newState === 3) {
+          await create(coords[n - 1], endHeading, 'fim')
+        }
+
+        // Geometric crossings through the middle of this road (X and T intersections).
+        // Rule: if the crossing road already has a stop_sign within 15m of the crossing
+        // point (added when P was pressed on that road), skip — the intersection already
+        // has PARE coverage. Maximum 2 PARE signs per X-crossing (never 4).
+        //
+        // createdThisRun tracks offset positions created in THIS cyclePareState call.
+        // Multiple crossings at the same geographic point (e.g. a 3-way intersection
+        // where two other roads meet Rua X at the same location) would otherwise produce
+        // duplicate PAREs at identical offset positions → duplicate_position warning.
+        const createdThisRun: L.LatLng[] = []
+
+        for (const crossing of this.findGeometricCrossings(road)) {
+          const crossingLatLng = L.latLng(crossing.lat, crossing.lng)
+          const crossingAlreadyCovered = mapStore.waypoints.some(wp => {
+            if (wp.waypoint_type !== 'stop_sign') return false
+            if (wp.road_name === road.name) return false  // ignore own road's signs
+            return L.latLng(wp.lat, wp.lng).distanceTo(crossingLatLng) <= 15
+          })
+          if (crossingAlreadyCovered) continue
+
+          const { fromStart, fromEnd } = this.nearestSegmentBearings(coords, crossing)
+          // Offset each PARE 3m to its respective side of the crossing so they don't
+          // land at the exact same coordinate (which triggers the duplicate-position warning).
+          const ptStart = this.offsetAlongBearing(crossing, (fromStart + 180) % 360, 3)
+          const ptEnd   = this.offsetAlongBearing(crossing, (fromEnd   + 180) % 360, 3)
+          const llStart = L.latLng(ptStart.lat, ptStart.lng)
+          const llEnd   = L.latLng(ptEnd.lat,   ptEnd.lng)
+
+          // Skip if this run already placed a PARE at essentially the same offset
+          // (happens when 2+ roads share the same crossing point on the selected road).
+          const tooClose = (ll: L.LatLng) => createdThisRun.some(p => p.distanceTo(ll) < 1)
+
+          if (newState === 1) {
+            if (!tooClose(llStart)) { await create(ptStart, fromStart, `× ${crossing.otherRoadName} (início→fim)`); createdThisRun.push(llStart) }
+            if (!tooClose(llEnd))   { await create(ptEnd,   fromEnd,   `× ${crossing.otherRoadName} (fim→início)`); createdThisRun.push(llEnd) }
+          } else if (newState === 2) {
+            if (!tooClose(llStart)) { await create(ptStart, fromStart, `× ${crossing.otherRoadName} (início→fim)`); createdThisRun.push(llStart) }
+          } else if (newState === 3) {
+            if (!tooClose(llEnd))   { await create(ptEnd,   fromEnd,   `× ${crossing.otherRoadName} (fim→início)`); createdThisRun.push(llEnd) }
+          }
+        }
+      }
+
+      await wsStore.runValidation()
+      this.pareState = newState
+    },
+
+    segmentsIntersect(
+      p1: GeoPoint, p2: GeoPoint,
+      p3: GeoPoint, p4: GeoPoint,
+    ): GeoPoint | null {
+      const dx12 = p2.lng - p1.lng, dy12 = p2.lat - p1.lat
+      const dx34 = p4.lng - p3.lng, dy34 = p4.lat - p3.lat
+      const denom = dx12 * dy34 - dy12 * dx34
+      if (Math.abs(denom) < 1e-12) return null  // parallel
+      const t = ((p3.lng - p1.lng) * dy34 - (p3.lat - p1.lat) * dx34) / denom
+      const u = ((p3.lng - p1.lng) * dy12 - (p3.lat - p1.lat) * dx12) / denom
+      if (t >= 0 && t <= 1 && u >= 0 && u <= 1) {
+        return { lat: p1.lat + t * dy12, lng: p1.lng + t * dx12 }
+      }
+      return null
+    },
+
+    findGeometricCrossings(road: RoadResponse): Array<{ lat: number; lng: number; otherRoadName: string }> {
+      const coords = road.coordinates
+      const n = coords.length
+      if (n < 2) return []
+      const startPt = L.latLng(coords[0].lat, coords[0].lng)
+      const endPt   = L.latLng(coords[n - 1].lat, coords[n - 1].lng)
+      const results: Array<{ lat: number; lng: number; otherRoadName: string }> = []
+      const seen = new Set<string>()
+
+      for (const other of useMapStore().roads) {
+        if (other.id === road.id) continue
+        for (let i = 0; i < n - 1; i++) {
+          for (let j = 0; j < other.coordinates.length - 1; j++) {
+            const pt = this.segmentsIntersect(
+              coords[i], coords[i + 1], other.coordinates[j], other.coordinates[j + 1],
+            )
+            if (!pt) continue
+            const ll = L.latLng(pt.lat, pt.lng)
+            if (ll.distanceTo(startPt) < 5 || ll.distanceTo(endPt) < 5) continue
+            const key = `${other.name}|${pt.lat.toFixed(6)}|${pt.lng.toFixed(6)}`
+            if (seen.has(key)) continue
+            seen.add(key)
+            results.push({ lat: pt.lat, lng: pt.lng, otherRoadName: other.name })
+          }
+        }
+      }
+      return results
+    },
+
+    async onDetectCrossroads() {
+      const detected = await useMapStore().detectCrossroads()
+      await useWorkspaceStore().runValidation()
+      this.bulkStatus = `${detected?.length ?? 0} novo(s) cruzamento(s) detectado(s).`
+    },
+
+    nearestSegmentBearings(coords: GeoPoint[], pt: { lat: number; lng: number }) {
+      let minD = Infinity, idx = 0
+      for (let i = 0; i < coords.length - 1; i++) {
+        const mid = L.latLng(
+          (coords[i].lat + coords[i + 1].lat) / 2,
+          (coords[i].lng + coords[i + 1].lng) / 2,
+        )
+        const d = mid.distanceTo(L.latLng(pt.lat, pt.lng))
+        if (d < minD) { minD = d; idx = i }
+      }
+      return {
+        fromStart: Math.round(this.calcBearing(coords[idx], coords[idx + 1]) * 10) / 10,
+        fromEnd:   Math.round(this.calcBearing(coords[idx + 1], coords[idx]) * 10) / 10,
+      }
+    },
+
+    onFooterDelete() {
+      if (!this.selectedRoad) return
+      useMapStore().selectRoad(this.selectedRoad.id)
+      this.openDeleteConfirm()
+    },
+
     // ── Road Quick Select handlers (Stage 8.A §5.3.2) ─────────────────────
 
     onRoadFromQuickSelect(roadId: number) {
@@ -800,7 +1089,61 @@ export default defineComponent({
 })
 </script>
 
+<style>
+/* Higher specificity (3 classes) beats Leaflet's .leaflet-container.leaflet-grab (2 classes),
+   ensuring crosshair wins regardless of stylesheet load order. */
+.leaflet-container.leaflet-container.gms-drawing-mode,
+.leaflet-container.leaflet-container.gms-drawing-mode * {
+  cursor: crosshair !important;
+}
+</style>
+
 <style scoped>
+.road-footer {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  padding: 10px 20px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  white-space: nowrap;
+  pointer-events: all;
+}
+.road-footer-info { display: flex; align-items: center; gap: 10px; }
+.road-footer-name { color: #0f172a; font-weight: 700; font-size: 14px; }
+.road-footer-detail { color: #64748b; font-size: 13px; }
+.road-footer-shortcuts { display: flex; align-items: center; gap: 6px; border-left: 1px solid #e2e8f0; padding-left: 14px; }
+.road-footer-shortcut-label { color: #475569; font-size: 13px; }
+.road-footer-delete {
+  padding: 4px 12px;
+  background: #dc2626;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+}
+.road-footer-delete:hover { background: #b91c1c; }
+.slide-footer-enter-active, .slide-footer-leave-active {
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.slide-footer-enter-from, .slide-footer-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(10px);
+}
+.slide-footer-enter-to, .slide-footer-leave-from {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
 .select-mode-hint {
   background: #1e293b;
   border-left: 3px solid #FFB400;

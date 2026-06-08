@@ -8,6 +8,8 @@ from guardianmapstudio.api.routers._validation_helper import _run_validation_aft
 from guardianmapstudio.api.schemas import CrossroadCreate, CrossroadResponse
 from guardianmapstudio.database.repository import MapRepository, WorkspaceRepository
 from guardianmapstudio.domain.contracts import Crossroad
+from guardianmapstudio.geometry.crossroad import CrossroadEngine
+from guardianmapstudio.geometry.engine import GeometryEngine
 
 router = APIRouter()
 
@@ -58,6 +60,44 @@ def create_crossroad(workspace_id: int, body: CrossroadCreate, db: DbSession) ->
     )
     _run_validation_after_write(workspace_id, db)
     return _crossroad_to_response(cr)
+
+
+@router.post("/{workspace_id}/crossroads/detect", response_model=list[CrossroadResponse])
+def detect_crossroads(workspace_id: int, db: DbSession) -> list[CrossroadResponse]:
+    """Auto-detect all road intersections and create missing crossroad markers.
+
+    Idempotent: skips pairs that already have a crossroad record.
+    Only true crossings are created — endpoint-to-endpoint junctions are excluded.
+    """
+    _require_draft(workspace_id, db)
+    repo = MapRepository(db)
+    roads = repo.get_roads(workspace_id)
+    existing = repo.get_crossroads(workspace_id)
+    existing_pairs: set[tuple[str, str]] = {
+        (cr.road_a_name, cr.road_b_name) for cr in existing
+    } | {(cr.road_b_name, cr.road_a_name) for cr in existing}
+
+    engine = CrossroadEngine(GeometryEngine())
+    intersections = engine.detect_all_intersections(roads)
+
+    created: list[CrossroadResponse] = []
+    for road_a, road_b, pt in intersections:
+        if (road_a.name, road_b.name) in existing_pairs:
+            continue
+        cr = repo.create_crossroad(
+            workspace_id=workspace_id,
+            road_a_name=road_a.name,
+            road_b_name=road_b.name,
+            latitude=pt.latitude,
+            longitude=pt.longitude,
+        )
+        existing_pairs.add((road_a.name, road_b.name))
+        created.append(_crossroad_to_response(cr))
+
+    if created:
+        _run_validation_after_write(workspace_id, db)
+
+    return created
 
 
 @router.delete("/{workspace_id}/crossroads/{crossroad_id}", status_code=204, response_model=None)

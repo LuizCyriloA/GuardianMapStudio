@@ -23,8 +23,9 @@ class ValidationEngine:
         errors = [r for r in results if r.is_blocking]
     """
 
-    DUPLICATE_POSITION_M = 0.5  # matches snap tolerance (doc 03)
+    DUPLICATE_POSITION_M = 0.5   # matches snap tolerance (doc 03)
     CROSSROAD_PROXIMITY_M = 1.0  # matches CrossroadEngine.INTERSECTION_PROXIMITY_M
+    STOP_SIGN_PROXIMITY_M = 15.0  # stop sign must be within this distance of a crossroad
 
     def __init__(self, geometry_engine: GeometryEngine) -> None:
         self._geo = geometry_engine
@@ -43,7 +44,7 @@ class ValidationEngine:
         results.extend(self._validate_workspace(roads))
         results.extend(self._validate_roads(roads))
         results.extend(self._validate_waypoints(waypoints, roads))
-        results.extend(self._validate_crossroads(crossroads, roads))
+        results.extend(self._validate_crossroads(crossroads, roads, waypoints))
         results.extend(self._validate_areas(areas))
 
         return results
@@ -143,27 +144,6 @@ class ValidationEngine:
 
         return results
 
-    def _validate_roads_waypoint_coverage(
-        self, roads: list[Road], waypoints: list[Waypoint]
-    ) -> list[ValidationResult]:
-        """road.no_waypoints — separate method because it needs waypoints."""
-        results = []
-        roads_with_waypoints = {w.road_name for w in waypoints if w.road_name is not None}
-        for road in roads:
-            if road.name not in roads_with_waypoints:
-                results.append(
-                    ValidationResult(
-                        severity=ValidationSeverity.WARNING,
-                        rule_id="road.no_waypoints",
-                        message=(
-                            f"Road '{road.name}' has no waypoints. Consider adding"
-                            " stop signs, speed bumps, or other markers."
-                        ),
-                        affected_entity_type="road",
-                        affected_entity_id=road.id,
-                    )
-                )
-        return results
 
     # ------------------------------------------------------------------
     # Waypoint rules
@@ -278,10 +258,6 @@ class ValidationEngine:
                         )
                     )
 
-        # road.no_waypoints: WARNING for each road with no associated waypoints
-        # Placed here because it needs both roads and waypoints lists
-        results.extend(self._validate_roads_waypoint_coverage(roads, waypoints))
-
         return results
 
     # ------------------------------------------------------------------
@@ -289,7 +265,7 @@ class ValidationEngine:
     # ------------------------------------------------------------------
 
     def _validate_crossroads(
-        self, crossroads: list[Crossroad], roads: list[Road]
+        self, crossroads: list[Crossroad], roads: list[Road], waypoints: list[Waypoint]
     ) -> list[ValidationResult]:
         results = []
         road_map: dict[str, Road] = {r.name: r for r in roads}
@@ -361,6 +337,30 @@ class ValidationEngine:
                             affected_entity_id=cr.id,
                         )
                     )
+
+        # crossroad.missing_stop_sign: WARNING for every GEOMETRIC X/T intersection
+        # (detected directly from road geometry — not dependent on manual crossroad
+        # markers) that has no stop_sign on either crossing road within proximity.
+        stop_signs = [w for w in waypoints if w.waypoint_type == WaypointType.STOP_SIGN]
+        for road_a, road_b, point in self._crossroad_engine.detect_all_intersections(roads):
+            has_stop_sign = any(
+                self._geo.projected_distance(point, wp.position) <= self.STOP_SIGN_PROXIMITY_M
+                for wp in stop_signs
+            )
+            if not has_stop_sign:
+                results.append(
+                    ValidationResult(
+                        severity=ValidationSeverity.WARNING,
+                        rule_id="crossroad.missing_stop_sign",
+                        message=(
+                            f"Cruzamento entre '{road_a.name}' e '{road_b.name}'"
+                            " não tem placa de PARE em nenhuma das duas vias"
+                            f" (a menos de {self.STOP_SIGN_PROXIMITY_M:.0f}m)."
+                        ),
+                        affected_entity_type="road",
+                        affected_entity_id=road_a.id,
+                    )
+                )
 
         return results
 

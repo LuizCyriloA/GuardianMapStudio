@@ -172,11 +172,6 @@ def test_road_width_positive_error(val_engine: ValidationEngine) -> None:
     assert "road.width_positive" in ids
 
 
-def test_road_no_waypoints_warning(val_engine: ValidationEngine) -> None:
-    road = _road([GeoPoint(LAT, LNG), GeoPoint(LAT - 0.01, LNG)])
-    results = val_engine.validate([road], [], [], [])
-    ids = [r.rule_id for r in _warnings(results)]
-    assert "road.no_waypoints" in ids
 
 
 # ------------------------------------------------------------------
@@ -319,11 +314,9 @@ def test_valid_workspace_no_results(val_engine: ValidationEngine) -> None:
     assert len(errors) == 0
 
 
-def test_can_publish_with_warnings(val_engine: ValidationEngine) -> None:
-    # Road with no waypoints → WARNING (not ERROR) → can still publish
+def test_road_without_waypoints_produces_no_errors(val_engine: ValidationEngine) -> None:
+    # A road with no waypoints is valid — no errors and no warnings.
+    # (road.no_waypoints rule was removed: some roads legitimately have no markers.)
     road = _road([GeoPoint(LAT, LNG), GeoPoint(LAT - 0.01, LNG)])
     results = val_engine.validate([road], [], [], [])
-    errors = _errors(results)
-    warnings = _warnings(results)
-    assert len(errors) == 0
-    assert len(warnings) > 0  # road.no_waypoints warning
+    assert len(_errors(results)) == 0

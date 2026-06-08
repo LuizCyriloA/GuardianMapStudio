@@ -45,6 +45,7 @@ export const api = {
     getCrossroads: (wsId) => request('GET', `/api/v1/workspaces/${wsId}/crossroads`),
     createCrossroad: (wsId, data) => request('POST', `/api/v1/workspaces/${wsId}/crossroads`, data),
     deleteCrossroad: (wsId, id) => request('DELETE', `/api/v1/workspaces/${wsId}/crossroads/${id}`),
+    detectCrossroads: (wsId) => request('POST', `/api/v1/workspaces/${wsId}/crossroads/detect`),
     // Restricted areas
     getAreas: (wsId) => request('GET', `/api/v1/workspaces/${wsId}/restricted-areas`),
     createArea: (wsId, data) => request('POST', `/api/v1/workspaces/${wsId}/restricted-areas`, data),

@@ -108,6 +108,16 @@ export const useMapStore = defineStore('map', {
             await api.deleteCrossroad(this.workspaceId, crossroadId);
             this.crossroads = this.crossroads.filter(c => c.id !== crossroadId);
         },
+        async detectCrossroads() {
+            if (!this.workspaceId)
+                return [];
+            const detected = await api.detectCrossroads(this.workspaceId);
+            for (const cr of detected) {
+                if (!this.crossroads.find(c => c.id === cr.id))
+                    this.crossroads.push(cr);
+            }
+            return detected;
+        },
         // Restricted areas
         async createArea(data) {
             if (!this.workspaceId)
