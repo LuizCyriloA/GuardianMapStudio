@@ -85,6 +85,13 @@ def test_publish_creates_new_draft(client) -> None:  # type: ignore[no-untyped-d
     assert new_ws["state"] == "draft"
     assert new_ws["id"] != ws_id
 
+    # The new draft must INHERIT the published map (so a published map can be
+    # edited / crossroad-detected) — previously it was created empty.
+    new_map = client.get(f"/api/v1/workspaces/{new_ws['id']}/map").json()
+    assert len(new_map["roads"]) == 1
+    assert len(new_map["waypoints"]) == 1
+    assert new_map["roads"][0]["name"] == ROAD_PAYLOAD["name"]
+
 
 def test_get_validation_cached(client) -> None:  # type: ignore[no-untyped-def]
     _, ws_id = _create_project_and_workspace(client)

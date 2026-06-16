@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from sqlalchemy.orm import Session
@@ -165,10 +166,74 @@ def publish_workspace(workspace_id: int, body: PublishRequest, db: DbSession) ->
     # Mark workspace as published
     ws_repo.set_published(workspace_id)
 
-    # Create new DRAFT workspace from this version
-    ws_repo.create(project_id=ws.project_id, base_version_id=version.id)
+    # Create new DRAFT workspace from this version AND carry the just-published
+    # entities into it, so editing can continue from where it left off.
+    # Previously the new draft was created empty — you could not edit (or
+    # auto-detect crossroads on) a published map, because get_active_draft
+    # returned an empty workspace.
+    new_draft = ws_repo.create(project_id=ws.project_id, base_version_id=version.id)
+    _materialize_into_workspace(map_repo, new_draft.id, roads, waypoints, crossroads, areas)
 
     return _version_to_response(version)
+
+
+def _materialize_into_workspace(
+    map_repo: MapRepository,
+    workspace_id: int,
+    roads: list[Any],
+    waypoints: list[Any],
+    crossroads: list[Any],
+    areas: list[Any],
+) -> None:
+    """Copy a set of map entities into a (fresh) workspace.
+
+    Used after publish so the new draft inherits the published map. Only active
+    waypoints/areas are carried (inactive = soft-deleted). Crossroads come along
+    so detection stays idempotent across edit rounds."""
+    for r in roads:
+        map_repo.create_road(
+            workspace_id=workspace_id,
+            name=r.name,
+            coordinates_json=json.dumps(
+                [{"lat": p.latitude, "lng": p.longitude} for p in r.coordinates]
+            ),
+            speed_limit_kmh=r.speed_limit_kmh,
+            direction=r.direction.value,
+            width_meters=r.width_meters,
+        )
+    for w in waypoints:
+        if not w.active:
+            continue
+        map_repo.create_waypoint(
+            workspace_id=workspace_id,
+            name=w.name,
+            waypoint_type=w.waypoint_type.value,
+            latitude=w.position.latitude,
+            longitude=w.position.longitude,
+            road_name=w.road_name,
+            heading_degrees=w.heading_degrees,
+            extra_data_json=json.dumps(w.extra_data),
+        )
+    for cr in crossroads:
+        map_repo.create_crossroad(
+            workspace_id=workspace_id,
+            road_a_name=cr.road_a_name,
+            road_b_name=cr.road_b_name,
+            latitude=cr.position.latitude,
+            longitude=cr.position.longitude,
+        )
+    for a in areas:
+        if not a.active:
+            continue
+        map_repo.create_area(
+            workspace_id=workspace_id,
+            name=a.name,
+            polygon_json=json.dumps(
+                [{"lat": p.latitude, "lng": p.longitude} for p in a.polygon]
+            ),
+            restriction_type=a.restriction_type.value,
+            speed_limit_kmh=a.speed_limit_kmh,
+        )
 
 
 def _snapshot_entities(
