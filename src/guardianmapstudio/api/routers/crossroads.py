@@ -72,12 +72,22 @@ def detect_crossroads(workspace_id: int, db: DbSession) -> list[CrossroadRespons
     _require_draft(workspace_id, db)
     repo = MapRepository(db)
     roads = repo.get_roads(workspace_id)
+    if not roads:
+        return []
     existing = repo.get_crossroads(workspace_id)
     existing_pairs: set[tuple[str, str]] = {
         (cr.road_a_name, cr.road_b_name) for cr in existing
     } | {(cr.road_b_name, cr.road_a_name) for cr in existing}
 
-    engine = CrossroadEngine(GeometryEngine())
+    # GeometryEngine requires a projected CRS (epsg). Pick the UTM zone from the
+    # roads' centroid — same pattern as publish_workspace. (Bug fix: the engine
+    # was constructed as GeometryEngine() with no argument, raising TypeError and
+    # making this endpoint 500.) detect_all_intersections itself works in lat/lng
+    # via Shapely, but CrossroadEngine still needs a valid engine instance.
+    all_points = [p for r in roads for p in r.coordinates]
+    avg_lat = sum(p.latitude for p in all_points) / len(all_points)
+    avg_lng = sum(p.longitude for p in all_points) / len(all_points)
+    engine = CrossroadEngine(GeometryEngine.from_centroid(avg_lat, avg_lng))
     intersections = engine.detect_all_intersections(roads)
 
     created: list[CrossroadResponse] = []
